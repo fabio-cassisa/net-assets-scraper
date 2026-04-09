@@ -1,78 +1,60 @@
-// Checking if injection has been done correctly in the page when loaeded: 
 console.log("Content script loaded on this page.");
 
-// HAR data functionalities:
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getHarData") {
     const harData = collectHarData();
     setTimeout(() => {
       sendResponse({ harData: harData });
-    }, 0); // Ensure sendResponse is called asynchronously
-    return true; // Indicates that sendResponse will be called asynchronously
+    }, 0);
+    return true;
+  }
+
+  if (request.action === "getColors") {
+    const topColors = extractColors();
+    sendResponse({ colors: topColors });
   }
 });
 
 function collectHarData() {
   const performanceEntries = performance.getEntriesByType("resource");
-  const harEntries = performanceEntries.map(entry => {
-    return {
-      request: {
-        url: entry.name
-      },
-      response: {
-        content: {
-          mimeType: entry.initiatorType
-        }
-      }
-    };
-  });
+  const harEntries = performanceEntries.map((entry) => ({
+    request: { url: entry.name },
+  }));
   return { log: { entries: harEntries } };
 }
 
-// CSS colorPicker functionalities:
 function rgbToHex(rgb) {
-  const rgba = rgb.match(/\d+/g);
+  const parts = rgb.match(/\d+/g);
+  if (!parts || parts.length < 3) return null;
+
+  // Skip fully transparent colors
+  if (parts.length >= 4 && parseInt(parts[3], 10) === 0) return null;
+
   let hex = "#";
-  
   for (let i = 0; i < 3; i++) {
-      const hexComponent = parseInt(rgba[i], 10).toString(16).padStart(2, '0');
-      hex += hexComponent;
+    hex += parseInt(parts[i], 10).toString(16).padStart(2, "0");
   }
-  
   return hex;
 }
 
 function extractColors() {
   const colorsMap = {};
 
-  document.querySelectorAll('*').forEach(element => {
-      const computedStyles = window.getComputedStyle(element);
-      const color = computedStyles.color;
-      const backgroundColor = computedStyles.backgroundColor;
+  document.querySelectorAll("*").forEach((element) => {
+    const computedStyles = window.getComputedStyle(element);
+    const hexColor = rgbToHex(computedStyles.color);
+    const hexBg = rgbToHex(computedStyles.backgroundColor);
 
-      const hexColor = rgbToHex(color);
-      const hexBackgroundColor = rgbToHex(backgroundColor);
-
-      if (hexColor && hexColor !== '#00000000') {
-          colorsMap[hexColor] = (colorsMap[hexColor] || 0) + 1;
-      }
-
-      if (hexBackgroundColor && hexBackgroundColor !== '#00000000') {
-          colorsMap[hexBackgroundColor] = (colorsMap[hexBackgroundColor] || 0) + 1;
-      }
+    if (hexColor) {
+      colorsMap[hexColor] = (colorsMap[hexColor] || 0) + 1;
+    }
+    if (hexBg) {
+      colorsMap[hexBg] = (colorsMap[hexBg] || 0) + 1;
+    }
   });
 
-  const sortedColors = Object.entries(colorsMap)
-      .sort(([, countA], [, countB]) => countB - countA)
-      .slice(0, 5)
-      .map(([color]) => color);
-
-  return sortedColors;
+  return Object.entries(colorsMap)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5)
+    .map(([color]) => color);
 }
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'getColors') {
-      const topColors = extractColors();
-      sendResponse({ colors: topColors });
-  }
-});

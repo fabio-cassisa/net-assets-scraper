@@ -9,23 +9,23 @@
     <script src="popup.js"></script>
 </head>
 <body>
-    <img src="assets/topTitle.png" alt="net assets scraper">
+    <img src="assets/topTitle.png" alt="net assets scraper" />
     <div class="mainWrapper">
         <h1 id="websiteOn" class="inter-medium">website you're looking now*:</h1>
-        <p id="currentWebsite" class="inter-extraLightItalic" style="color: #FFC7C7;"></p>
+        <p id="currentWebsite" class="inter-extraLightItalic currentWebsite"></p>
         <h1 class="inter-medium">what do you wanna download?</h1>
             <div class="labelWrapper">
                 <label>
-                    <input type="checkbox" id="imagesCheckbox" checked> <span class="inter-regular">Images <span class="inter-extraLightItalic">(jpg, jpeg, png, gif, webp, tif, svg)</span></span>
+                    <input type="checkbox" id="imagesCheckbox" checked /> <span class="inter-regular">Images <span class="inter-extraLightItalic">(jpg, jpeg, png, gif, webp, tif, svg)</span></span>
                 </label>
                 <label>
-                    <input type="checkbox" id="videosCheckbox" checked> <span class="inter-regular">Videos <span class="inter-extraLightItalic">(mp4, webm, ogg, avi, mov, wmv)</span></span>
+                    <input type="checkbox" id="videosCheckbox" checked /> <span class="inter-regular">Videos <span class="inter-extraLightItalic">(mp4, webm, ogg, avi, mov, wmv)</span></span>
                 </label>
                 <label>
-                    <input type="checkbox" id="fontsCheckbox" checked> <span class="inter-regular">Fonts <span class="inter-extraLightItalic">(woff, woff2, ttf, otf, eot)</span></span>
+                    <input type="checkbox" id="fontsCheckbox" checked /> <span class="inter-regular">Fonts <span class="inter-extraLightItalic">(woff, woff2, ttf, otf, eot)</span></span>
                 </label>
             </div>
-        <img src="assets/downloadBTN.png" id="downloadBtn"></img>
+        <img src="assets/downloadBTN.png" id="downloadBtn" alt="download" />
             <p id="status" class="inter-extraLightItalic">click the button to download files!</p>
         <div id="progress-container">
                 <div id="progress-bar">
@@ -36,14 +36,13 @@
         <div id="summary"></div>
         <div class="colorWrapper">
             <h1 class="inter-medium">colors detected on the page:</h1>
-            <div id="color-squares" style="display: flex; gap: 10px; margin-top: 15px;"></div>
+            <div id="color-squares" class="color-squares-container"></div>
                 <div id="tooltip" class="tooltip inter-medium glassColor"></div>
         </div>
         <p id="info" class="inter-extraLightItalic">*just scroll down, let the whole page load fully or reload once more!</p>
     </div>
     <div id="custom-alert" class="modal">
         <div class="modal-content">
-          <!--<span id="close-alert" class="close-button">&times;</span>-->
           <p id="alert-message" class="inter-regular"></p>
           <button id="close-alert-button" class="inter-medium">OK</button>
         </div>

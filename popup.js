@@ -16,9 +16,8 @@ function isImage(url) {
     lowerUrl.includes(".tif?") ||
     lowerUrl.endsWith(".svg") ||
     lowerUrl.includes(".svg?") ||
-    lowerUrl.endsWith(".avif") || //Added support for .avif
+    lowerUrl.endsWith(".avif") ||
     lowerUrl.includes(".avif?")
-    //add .jfif support???? -- miguel's whatsapp thingy
   );
 }
 
@@ -59,109 +58,57 @@ function isFont(url) {
 }
 
 document.addEventListener("DOMContentLoaded", function () {
-  // Get all the elements by their IDs:
   const downloadBtn = document.getElementById("downloadBtn");
   const statusElem = document.getElementById("status");
   const progressContainer = document.getElementById("progress-container");
   const progressBar = document.getElementById("progress-bar").firstElementChild;
   const progressText = document.getElementById("progress-text");
   const summaryElem = document.getElementById("summary");
-
-  // Declare empty array to store colorData:
-  let detectedColors = [];
-
-  // Handle colors fetching and display
   const colorSquaresContainer = document.getElementById("color-squares");
   const tooltip = document.getElementById("tooltip");
 
-  // Query for the active tab in the current window
+  let detectedColors = [];
+  let activeTabHostname = "";
+
+  // Single tab query for both hostname display and color extraction
   chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-    var activeTab = tabs[0];
-    var activeTabUrl = new URL(activeTab.url);
-
-    // Display the hostname (e.g., 'example.com') in the popup
-    document.getElementById("currentWebsite").textContent =
-      activeTabUrl.hostname;
-  });
-
-  // Function to show the custom alert
-  function showCustomAlert(message) {
-    const modal = document.getElementById("custom-alert");
-    const alertMessage = document.getElementById("alert-message");
-    const closeAlertButton = document.getElementById("close-alert-button");
-    //const closeIcon = document.getElementById('close-alert');
-
-    alertMessage.textContent = message;
-    modal.style.display = "block";
-
-    // Close the modal after 5 seconds
-    const autoCloseTimeout = setTimeout(() => {
-      modal.style.display = "none";
-    }, 3000); // 3sec so far!
-
-    // Close the modal when the user clicks the button
-    closeAlertButton.onclick = function () {
-      clearTimeout(autoCloseTimeout); // Cancel the auto-close if user clicks OK
-      modal.style.display = "none";
-    };
-
-    // Close the modal when the user clicks the button or the close icon
-    /*
-        closeAlertButton.onclick = closeIcon.onclick = function () {
-            modal.style.display = 'none';
-        };
-        */
-
-    // Close the modal when the user clicks outside of it
-    window.onclick = function (event) {
-      if (event.target === modal) {
-        modal.style.display = "none";
-      }
-    };
-  }
-
-  // Color picking main logic here:
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    // Error handling to check if active tabs have been found or not:
     if (tabs.length === 0) {
       console.error("No active tabs found.");
       return;
     }
 
-    const tabId = tabs[0].id;
+    const activeTab = tabs[0];
+    const activeTabUrl = new URL(activeTab.url);
+    activeTabHostname = activeTabUrl.hostname;
 
-    chrome.tabs.sendMessage(tabId, { action: "getColors" }, (response) => {
+    document.getElementById("currentWebsite").textContent = activeTabHostname;
+
+    // Fetch colors from the content script
+    chrome.tabs.sendMessage(activeTab.id, { action: "getColors" }, (response) => {
       if (chrome.runtime.lastError) {
-        console.error(
-          "Error in sendMessage:",
-          chrome.runtime.lastError.message
-        );
+        console.error("Error in sendMessage:", chrome.runtime.lastError.message);
         return;
       }
 
       if (response && response.colors) {
-        detectedColors = response.colors; // Storing detected colors into the array
+        detectedColors = response.colors;
         response.colors.forEach((color) => {
           const square = document.createElement("div");
           square.classList.add("color-square");
           square.style.backgroundColor = color;
           square.title = color;
 
-          // Alert to give feedabck when clicked and copied -- to be customized!!
           square.addEventListener("click", () => {
             navigator.clipboard.writeText(color).then(() => {
               showCustomAlert(`Copied ${color} to clipboard!`);
             });
           });
 
-          // Adj tooltips' sizes depending on screenszize:
           square.addEventListener("mouseenter", (event) => {
             const rect = square.getBoundingClientRect();
             tooltip.textContent = color;
             tooltip.style.left = `${rect.left + window.scrollX}px`;
-            tooltip.style.top = `${
-              rect.top - tooltip.offsetHeight + window.scrollY - 5
-            }px`;
+            tooltip.style.top = `${rect.top - tooltip.offsetHeight + window.scrollY - 5}px`;
             tooltip.style.opacity = 1;
           });
 
@@ -177,7 +124,26 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   });
 
-  // Event listener for the download button
+  // Custom alert modal
+  function showCustomAlert(message) {
+    const modal = document.getElementById("custom-alert");
+    const alertMessage = document.getElementById("alert-message");
+    const closeAlertButton = document.getElementById("close-alert-button");
+
+    alertMessage.textContent = message;
+    modal.style.display = "block";
+
+    const autoCloseTimeout = setTimeout(() => {
+      modal.style.display = "none";
+    }, 3000);
+
+    closeAlertButton.onclick = function () {
+      clearTimeout(autoCloseTimeout);
+      modal.style.display = "none";
+    };
+  }
+
+  // Download button handler
   downloadBtn.addEventListener("click", () => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs.length === 0) {
@@ -187,7 +153,6 @@ document.addEventListener("DOMContentLoaded", function () {
       }
 
       const tabId = tabs[0].id;
-      console.log(`Sending message to tab ${tabId}`);
 
       chrome.tabs.sendMessage(tabId, { action: "getHarData" }, (response) => {
         if (chrome.runtime.lastError) {
@@ -202,29 +167,32 @@ document.addEventListener("DOMContentLoaded", function () {
           return;
         }
 
-        console.log("Received response from content script:", response);
-        const urls = extractUrlsFromHar(response.harData); // Extract URLs from HAR data
+        const allUrls = extractUrlsFromHar(response.harData);
 
-        // Use JSZip to create a zip file
-        const zip = new JSZip();
-        const promises = [];
-
-        // Add colorData as a text file
-        const colorText = detectedColors.join("\n");
-        zip.file("colors.txt", colorText); // Add colors as a simple text file
-
-        // BONUS: save colorData as a json file too
-        /*
-                 const colorJson = JSON.stringify(detectedColors, null, 2);
-                 zip.file("colors.json", colorJson);
-                 */
-
-        // Get checkboxes state
         const imagesChecked = document.getElementById("imagesCheckbox").checked;
         const videosChecked = document.getElementById("videosCheckbox").checked;
         const fontsChecked = document.getElementById("fontsCheckbox").checked;
 
-        // Initialize progress
+        // Filter first, then track progress only for matching URLs
+        const filteredUrls = allUrls.filter((url) => {
+          if (imagesChecked && isImage(url)) return true;
+          if (videosChecked && isVideo(url)) return true;
+          if (fontsChecked && isFont(url)) return true;
+          return false;
+        });
+
+        if (filteredUrls.length === 0) {
+          statusElem.textContent = "No matching files found on this page.";
+          return;
+        }
+
+        const zip = new JSZip();
+
+        // Only include colors.txt if colors were actually detected
+        if (detectedColors.length > 0) {
+          zip.file("colors.txt", detectedColors.join("\n"));
+        }
+
         progressContainer.style.display = "block";
         summaryElem.style.display = "none";
         let completed = 0;
@@ -233,124 +201,105 @@ document.addEventListener("DOMContentLoaded", function () {
         const countByType = { images: 0, videos: 0, fonts: 0 };
 
         function updateProgress() {
-          const progress = (completed / urls.length) * 100;
+          const progress = (completed / filteredUrls.length) * 100;
           progressBar.style.width = `${progress}%`;
           progressText.textContent = `${Math.round(progress)}%`;
         }
 
-        // Function to determine if URL should be included based on file type
-        function shouldInclude(url) {
-          const lowerUrl = url.toLowerCase();
-          if (imagesChecked && isImage(url)) {
-            return true;
-          }
-          if (videosChecked && isVideo(url)) {
-            return true;
-          }
-          if (fontsChecked && isFont(url)) {
-            return true;
-          }
-          return false;
-        }
+        const promises = filteredUrls.map((url) =>
+          fetch(url)
+            .then((response) => {
+              const fileName = getFileName(url, response);
+              return response.blob().then((blobData) => {
+                zip.file(fileName, blobData, { binary: true });
+                completed++;
+                successful++;
+                if (isImage(url)) countByType.images++;
+                else if (isVideo(url)) countByType.videos++;
+                else if (isFont(url)) countByType.fonts++;
+                updateProgress();
+              });
+            })
+            .catch((error) => {
+              console.error(`Failed to fetch ${url}:`, error);
+              completed++;
+              failed++;
+              updateProgress();
+            })
+        );
 
-        // Process each URL to decide inclusion and fetch
-        urls.forEach((url) => {
-          if (shouldInclude(url)) {
-            promises.push(
-              fetch(url)
-                .then((response) => {
-                  const fileName = getFileName(url, response); // Get filename based on response or URL
-                  return { fileName, blob: response.blob() };
-                })
-                .then(({ fileName, blob }) => {
-                  return blob.then((blobData) => {
-                    // Add file to zip archive
-                    zip.file(fileName, blobData, { binary: true });
-                    completed++;
-                    successful++;
-                    if (isImage(url)) countByType.images++;
-                    else if (isVideo(url)) countByType.videos++;
-                    else if (isFont(url)) countByType.fonts++;
-                    updateProgress();
-                  });
-                })
-                .catch((error) => {
-                  console.error(`Failed to fetch ${url}:`, error);
-                  completed++;
-                  failed++;
-                  updateProgress();
-                })
-            );
-          } else {
-            completed++;
-            updateProgress();
-          }
-        });
-
-        // When all promises are resolved, generate the zip file
+        // Generate zip when all downloads complete
         Promise.all(promises)
           .then(() => {
-            zip
-              .generateAsync({ type: "blob" })
-              .then((content) => {
-                const blobUrl = URL.createObjectURL(content);
-                // Save zip file using chrome.downloads API
-                chrome.downloads.download(
-                  {
-                    url: blobUrl,
-                    filename: "downloaded_assets.zip",
-                  },
-                  (downloadId) => {
-                    if (chrome.runtime.lastError) {
-                      console.error(
-                        "Failed to download zip file:",
-                        chrome.runtime.lastError
-                      );
-                      // Handle failure
-                    } else {
-                      console.log("Zip file download started.");
-                      // No need to track download here, handle it in onChanged listener
-                    }
+            const zipName = activeTabHostname
+              ? `${activeTabHostname.replace(/[^a-z0-9.-]/gi, "_")}_assets.zip`
+              : "downloaded_assets.zip";
 
-                    // Revoke the blob URL to free memory:
-                    URL.revokeObjectURL(blobUrl);
+            return zip.generateAsync({ type: "blob" }).then((content) => {
+              const blobUrl = URL.createObjectURL(content);
+              chrome.downloads.download(
+                { url: blobUrl, filename: zipName },
+                () => {
+                  if (chrome.runtime.lastError) {
+                    console.error("Failed to download zip file:", chrome.runtime.lastError);
                   }
-                );
-              })
-              .catch((zipError) => {
-                console.error("Failed to generate zip file:", zipError);
-              });
+                  URL.revokeObjectURL(blobUrl);
+                }
+              );
+            });
           })
           .catch((error) => {
-            console.error("Failed to process promises:", error);
+            console.error("Failed to process downloads:", error);
           })
           .finally(() => {
             progressContainer.style.display = "none";
             summaryElem.style.display = "block";
-            summaryElem.innerHTML =
-              /*`
-                            <p>Total files: ${successful + failed}</p>
-                            <p>Successful: ${successful}</p>
-                            <p>Failed: ${failed}</p>*/
-              `<p class="inter-regular">Images: ${countByType.images} - Videos: ${countByType.videos} - Fonts: ${countByType.fonts}</p>`;
+            summaryElem.innerHTML = `<p class="inter-regular">Images: ${countByType.images} - Videos: ${countByType.videos} - Fonts: ${countByType.fonts}</p>`;
             statusElem.textContent = `Download complete. ${successful} files downloaded, ${failed} failed.`;
           });
 
-        statusElem.textContent = `Downloading files as a zip...`;
+        statusElem.textContent = "Downloading files as a zip...";
       });
     });
   });
 });
 
-// Define the function to extract URLs from HAR data
+// Extract unique URLs from HAR data
 function extractUrlsFromHar(harData) {
   const entries = harData.log.entries;
-  const urls = entries.map((entry) => entry.request.url);
+  const seen = new Set();
+  const urls = [];
+  for (const entry of entries) {
+    const url = entry.request.url;
+    if (!seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
   return urls;
 }
 
+// Strip query string to get clean filename
+function cleanFileName(url) {
+  try {
+    const pathname = new URL(url).pathname;
+    let fileName = pathname.substring(pathname.lastIndexOf("/") + 1);
+    if (!fileName.trim()) {
+      fileName = `file_${Date.now()}`;
+    }
+    return fileName.replace(/[<>:"/\\|?*]/g, "_");
+  } catch {
+    let fileName = url.substring(url.lastIndexOf("/") + 1);
+    // Strip query string
+    const qIdx = fileName.indexOf("?");
+    if (qIdx !== -1) fileName = fileName.substring(0, qIdx);
+    if (!fileName.trim()) fileName = `file_${Date.now()}`;
+    return fileName.replace(/[<>:"/\\|?*]/g, "_");
+  }
+}
+
 function getFileName(url, response) {
-  let fileName = cleanFileName(url); // Implement cleanFileName function as needed
+  let fileName = cleanFileName(url);
 
   // Attempt to get filename from Content-Disposition header
   const contentDisposition = response.headers.get("Content-Disposition");
@@ -361,119 +310,45 @@ function getFileName(url, response) {
     }
   }
 
-  // Fallback to content type if filename not found
-  if (!fileName) {
+  // Fallback to content type if filename has no extension
+  if (!fileName.includes(".")) {
     const contentType = response.headers.get("Content-Type");
     if (contentType) {
-      fileName += determineExtensionFromContentType(url, contentType);
+      const ext = mimeToExtension(contentType);
+      if (ext) fileName += ext;
     }
   }
 
-  // If still no valid filename, generate a unique name based on URL
-  if (!fileName.trim()) {
-    fileName = `file_${Date.now()}`;
-  }
-
-  // Clean up the filename to ensure it ends with the correct extension
+  // Ensure correct extension based on URL
   fileName = ensureCorrectExtension(url, fileName);
 
-  // Remove characters that are not allowed in filenames
-  fileName = fileName.replace(/[<>:"/\\|?*]/g, "_");
-
-  return fileName;
-}
-
-function determineExtensionFromContentType(url, contentType) {
-  const extension = mimeToExtension(contentType);
-  if (extension) {
-    // Check specific cases for SVG, GIF, WebP
-    if (isSVG(url) && extension !== ".svg") {
-      return ".svg";
-    } else if (isGIF(url) && extension !== ".gif") {
-      return ".gif";
-    } else if (isWebP(url) && extension !== ".webp") {
-      return ".webp";
-    } else if (isAVIF(url) && extension !== ".avif") {
-      // Added support for AVIF
-      return ".avif";
-    } else {
-      return extension;
-    }
-  }
-  return "";
+  return fileName.replace(/[<>:"/\\|?*]/g, "_");
 }
 
 function ensureCorrectExtension(url, fileName) {
-  const lowerUrl = url.toLowerCase();
-  const hasValidExtension = (fileName) => {
-    const ext = fileName.slice(fileName.lastIndexOf(".")).toLowerCase();
-    return [
-      ".jpg",
-      ".jpeg",
-      ".png",
-      ".gif",
-      ".webp",
-      ".avif",
-      ".tif",
-      ".svg",
-      ".mp4",
-      ".webm",
-      ".ogg",
-      ".avi",
-      ".mov",
-      ".wmv",
-      ".woff",
-      ".woff2",
-      ".ttf",
-      ".otf",
-      ".eot",
-    ].includes(ext);
-  };
+  const validExtensions = new Set([
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".tif", ".svg",
+    ".mp4", ".webm", ".ogg", ".avi", ".mov", ".wmv",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+  ]);
 
-  if (isImage(url)) {
-    if (!hasValidExtension(fileName)) {
-      fileName += ".png"; // Default to .png for images if no valid extension found
-    }
-  } else if (isVideo(url)) {
-    if (!hasValidExtension(fileName)) {
-      fileName += ".mp4"; // Default to .mp4 for videos if no valid extension found
-    }
-  } else if (isFont(url)) {
-    if (!hasValidExtension(fileName)) {
-      fileName += ".woff"; // Default to .woff for fonts if no valid extension found
-    }
-  }
+  const ext = fileName.slice(fileName.lastIndexOf(".")).toLowerCase();
+  if (validExtensions.has(ext)) return fileName;
+
+  // Default extensions by type
+  if (isImage(url)) return fileName + ".png";
+  if (isVideo(url)) return fileName + ".mp4";
+  if (isFont(url)) return fileName + ".woff";
   return fileName;
 }
 
-function isSVG(url) {
-  const lowerUrl = url.toLowerCase();
-  return lowerUrl.endsWith(".svg") || lowerUrl.includes(".svg?");
-}
-
-function isGIF(url) {
-  const lowerUrl = url.toLowerCase();
-  return lowerUrl.endsWith(".gif") || lowerUrl.includes(".gif?");
-}
-
-function isWebP(url) {
-  const lowerUrl = url.toLowerCase();
-  return lowerUrl.endsWith(".webp") || lowerUrl.includes(".webp?");
-}
-
-function isAVIF(url) {
-  const lowerUrl = url.toLowerCase();
-  return lowerUrl.endsWith(".avif") || lowerUrl.includes(".avif?"); // Added support for AVIF
-}
-
-// Function to convert MIME type to file extension
 function mimeToExtension(mimeType) {
   const mimeMap = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/gif": ".gif",
     "image/webp": ".webp",
-    "image/avif": ".avif", // Added support for AVIF
+    "image/avif": ".avif",
     "image/tiff": ".tif",
     "image/svg+xml": ".svg",
     "video/mp4": ".mp4",
@@ -489,19 +364,4 @@ function mimeToExtension(mimeType) {
     "application/vnd.ms-fontobject": ".eot",
   };
   return mimeMap[mimeType] || "";
-}
-
-// Define the function to clean up file names
-function cleanFileName(url) {
-  let fileName = url.substring(url.lastIndexOf("/") + 1);
-
-  // If the filename is empty (no file name in URL), generate a unique name
-  if (!fileName.trim()) {
-    fileName = `file_${Date.now()}`;
-  }
-
-  // Remove characters that are not allowed in filenames
-  fileName = fileName.replace(/[<>:"/\\|?*]/g, "_");
-
-  return fileName;
 }
