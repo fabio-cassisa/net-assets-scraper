@@ -1,14 +1,14 @@
 # chrome assets scraper
 
-browser extension that captures and downloads assets from any website you're visiting.
+browser extension that captures and downloads assets from any website you visit.
 
 ## context
 
-built this out of a real need at work — when building ad creatives, I constantly need to grab images, fonts, videos, and other assets from client websites for reference. instead of digging through devtools and network tabs manually, I wanted a one-click solution.
+born from a real need — when building ad creatives, you constantly grab images, fonts, videos, and other assets from client websites for reference. instead of digging through devtools and network tabs manually, this extension captures network requests and lets you download assets directly.
 
-the extension monitors network requests, captures asset URLs, and lets you download them directly. it's a developer tool, built for creative developers who need assets fast.
+a developer tool for creative developers who need assets fast.
 
-> ⚠️ alpha version — built for personal/educational use, not commercial distribution.
+> ⚠️ alpha version — personal/educational use, not commercial distribution.
 
 ## stack
 
@@ -18,7 +18,7 @@ the extension monitors network requests, captures asset URLs, and lets you downl
 
 1. install the extension locally (see below)
 2. navigate to any website
-3. click the extension icon — it captures network requests
+3. click the extension icon — network requests get captured
 4. browse captured assets and download what you need
 
 ## structure
@@ -36,7 +36,7 @@ the extension monitors network requests, captures asset URLs, and lets you downl
 
 ## install locally
 
-```bash
+```
 1. clone this repo
 2. open chrome://extensions
 3. enable "developer mode"
@@ -46,25 +46,23 @@ the extension monitors network requests, captures asset URLs, and lets you downl
 
 ## permissions
 
-the extension requires:
-- `tabs` — to access the current tab
-- `downloads` — to save assets locally
-- `activeTab` + `scripting` — to interact with page content
-- `clipboardWrite` — to copy asset URLs
-- `host_permissions: <all_urls>` — to capture network requests from any site
+- `tabs` — access the current tab
+- `downloads` — save assets locally
+- `activeTab` + `scripting` — interact with page content
+- `clipboardWrite` — copy asset URLs
+- `host_permissions: <all_urls>` — capture requests from any site
 
 ## status
 
-🟡 alpha — functional but rough around the edges. planned improvements:
+🟡 alpha — functional but rough. planned:
 - [ ] better asset categorization (images, fonts, scripts, media)
-- [ ] filtering and search within captured assets
+- [ ] filtering and search
 - [ ] bulk download
 - [ ] ui/ux overhaul
-- [ ] potential migration to a more modern stack
 
 ## why open source
 
-tools like this exist commercially, but I wanted something lightweight and transparent. no tracking, no account needed, no cloud — just a local tool that does one thing well.
+tools like this exist commercially. this one is lightweight and transparent — no tracking, no account, no cloud. just a local tool that does one thing.
 
 ---
 
