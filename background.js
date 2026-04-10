@@ -140,11 +140,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   }
 });
 
-// ─── Extension icon click — open side panel ──────────────────────────
-chrome.action.onClicked.addListener((tab) => {
-  chrome.sidePanel.open({ tabId: tab.id });
-});
-
 // ─── Messaging — panel and content script communication ──────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "getResources") {
@@ -173,6 +168,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.runtime.onInstalled.addListener(() => {
   console.log("Net Assets Scraper V2 installed.");
 
-  // Ensure side panel is enabled
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  // Enable side panel on action click for browsers that support it
+  if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
+      // Side panel not supported (e.g., Arc) — popup fallback handles it
+    });
+  }
 });
