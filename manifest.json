@@ -17,7 +17,6 @@
     "scripting",
     "downloads",
     "clipboardWrite",
-    "storage",
     "webRequest"
   ],
   "host_permissions": [

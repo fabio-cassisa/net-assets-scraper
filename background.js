@@ -102,7 +102,7 @@ function handleRequest(details) {
   const url = details.url;
 
   // Skip data URIs, browser-internal URLs, and tracking domains
-  if (url.startsWith("data:") || url.startsWith("chrome:") || url.startsWith("chrome-extension:") || url.startsWith("moz-extension") || url.startsWith("arc:")) return;
+  if (url.startsWith("data:") || url.startsWith("chrome:") || url.startsWith("chrome-extension:") || url.startsWith("moz-extension:") || url.startsWith("arc:")) return;
   if (isSkippedDomain(url)) return;
 
   // Get content-type from response headers (may be absent if listener fallback)

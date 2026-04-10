@@ -59,12 +59,15 @@
         }
 
         const capture = captures.get(videoId);
-        // Store a copy of the buffer (original may be detached)
-        const copy = new Uint8Array(
-          data instanceof ArrayBuffer ? data : data.buffer
-            ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
-            : data
-        );
+        // Store a TRUE COPY of the buffer — the original may be reused or
+        // detached after appendBuffer returns. new Uint8Array(view) copies;
+        // new Uint8Array(arrayBuffer) only creates a view (not safe).
+        const raw = data instanceof ArrayBuffer
+          ? new Uint8Array(data)
+          : data.buffer
+            ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+            : new Uint8Array(data);
+        const copy = new Uint8Array(raw); // copy constructor = true clone
         capture.buffers.push(copy);
         capture.totalBytes += copy.byteLength;
       }

@@ -668,6 +668,8 @@ function initControls() {
     btnText.textContent = "Scanning…";
     allAssets = [];
     domData = null;
+    platformData = null;
+    detectedPlatform = null;
     selectedUrls.clear();
     renderGrid();
     renderBadges();
@@ -897,7 +899,14 @@ function renderMeta(meta) {
     if (!row.value) continue;
     const div = document.createElement("div");
     div.className = "meta-row";
-    div.innerHTML = `<span class="meta-label">${row.label}</span><span class="meta-value">${row.value}</span>`;
+    const label = document.createElement("span");
+    label.className = "meta-label";
+    label.textContent = row.label;
+    const value = document.createElement("span");
+    value.className = "meta-value";
+    value.textContent = row.value;
+    div.appendChild(label);
+    div.appendChild(value);
     container.appendChild(div);
   }
 }
@@ -1162,7 +1171,14 @@ function renderPlatformMeta(meta, platform) {
   for (const row of platformRows) {
     const div = document.createElement("div");
     div.className = "meta-row platform-meta-row";
-    div.innerHTML = `<span class="meta-label">${row.label}</span><span class="meta-value">${row.value}</span>`;
+    const label = document.createElement("span");
+    label.className = "meta-label";
+    label.textContent = row.label;
+    const value = document.createElement("span");
+    value.className = "meta-value";
+    value.textContent = row.value;
+    div.appendChild(label);
+    div.appendChild(value);
     container.appendChild(div);
   }
 }

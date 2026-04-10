@@ -310,7 +310,8 @@ function extractImageContext() {
       }
       if (el.src) urls.push(el.src);
     } else if (tag === "video") {
-      if (el.src) urls.push(el.src);
+      // Skip blob: URLs — they're page-scoped MSE streams, unfetchable from extension
+      if (el.src && !el.src.startsWith("blob:")) urls.push(el.src);
       if (el.poster) urls.push(el.poster);
     } else {
       // Background image
