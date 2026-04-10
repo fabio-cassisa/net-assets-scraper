@@ -17,7 +17,7 @@ const AUDIO_MIMES = ["audio/"];
 // Domains to skip — tracking, analytics, ad networks
 const SKIP_DOMAINS = new Set([
   "google-analytics.com", "googletagmanager.com", "doubleclick.net",
-  "facebook.net", "fbcdn.net", "analytics.google.com",
+  "facebook.net", "analytics.google.com",
   "hotjar.com", "clarity.ms", "newrelic.com", "sentry.io",
   "segment.com", "mixpanel.com", "amplitude.com",
   "googleadservices.com", "googlesyndication.com",
@@ -102,7 +102,7 @@ function handleRequest(details) {
   const url = details.url;
 
   // Skip data URIs, browser-internal URLs, and tracking domains
-  if (url.startsWith("data:") || url.startsWith("chrome") || url.startsWith("moz-extension") || url.startsWith("arc:")) return;
+  if (url.startsWith("data:") || url.startsWith("chrome:") || url.startsWith("chrome-extension:") || url.startsWith("moz-extension") || url.startsWith("arc:")) return;
   if (isSkippedDomain(url)) return;
 
   // Get content-type from response headers (may be absent if listener fallback)

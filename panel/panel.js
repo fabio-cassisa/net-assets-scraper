@@ -669,17 +669,19 @@ function initControls() {
       }
 
       try {
-        // Also run generic deep scan (for colors, fonts, meta)
-        domData = await chrome.tabs.sendMessage(tab.id, { action: "deepScan" });
+        // If platform already deep-scanned (scrolled), just analyze DOM without re-scrolling
+        const domAction = platformData ? "analyzeDOM" : "deepScan";
+        domData = await chrome.tabs.sendMessage(tab.id, { action: domAction });
       } catch {
-        // Fallback: inject + deep scan
+        // Fallback: inject + scan
         try {
           await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             files: ["content.js"],
           });
           await new Promise((r) => setTimeout(r, 300));
-          domData = await chrome.tabs.sendMessage(tab.id, { action: "deepScan" });
+          const domAction = platformData ? "analyzeDOM" : "deepScan";
+          domData = await chrome.tabs.sendMessage(tab.id, { action: domAction });
         } catch {
           domData = null;
         }
@@ -970,12 +972,13 @@ async function downloadKit() {
 
     // Remove empty folders
     for (const [type, folder] of Object.entries(folders)) {
-      if (Object.keys(folder.files).length === 0) {
-        zip.remove(type === "image" ? "images" : type === "video" ? "videos" : type === "font" ? "fonts" : "audio");
+      const folderName = type === "image" ? "images" : type === "video" ? "videos" : type === "font" ? "fonts" : "audio";
+      if (zip.folder(folderName).file(/.+/).length === 0) {
+        zip.remove(folderName);
       }
     }
     // Check logos folder
-    if (Object.keys(logosFolder.files).length === 0) {
+    if (zip.folder("logos").file(/.+/).length === 0) {
       zip.remove("logos");
     }
 
@@ -1081,6 +1084,9 @@ function renderPlatformBadge() {
 function renderPlatformMeta(meta, platform) {
   const container = document.getElementById("metaInfo");
   if (!container || !meta) return;
+
+  // Clear previous platform meta rows to avoid duplication on re-scan
+  container.querySelectorAll(".platform-meta-row").forEach(el => el.remove());
 
   // Add platform-specific rows to the existing meta section
   const platformRows = [];

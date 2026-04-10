@@ -359,7 +359,7 @@ function getZone(el) {
 
 function detectLogo(el) {
   const alt = (el.alt || "").toLowerCase();
-  const cls = (el.className || "").toLowerCase();
+  const cls = (typeof el.className === "string" ? el.className : "").toLowerCase();
   const id = (el.id || "").toLowerCase();
   const src = (el.src || "").toLowerCase();
 

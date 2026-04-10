@@ -395,7 +395,7 @@ function getBestImageUrl(img) {
 function isInstagramCdnUrl(url) {
   if (!url) return false;
   // Accept Instagram CDN URLs and any https image URLs on the page
-  return IG_CDN_PATTERN.test(url) || (url.startsWith("https://") && !url.includes("static.cdninstagram.com/rsrc"));
+  return IG_CDN_PATTERN.test(url) && !url.includes("static.cdninstagram.com/rsrc");
 }
 
 // ─── Main Analyzer ───────────────────────────────────────────────────
@@ -581,23 +581,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((err) => {
         console.error("NAS Instagram deep scan error:", err);
         sendResponse({ platform: "instagram", error: err.message });
-      });
-    return true;
-  }
-
-  // Proxy fetch for blob: URLs (same as base content.js)
-  if (message.action === "fetchBlob") {
-    fetch(message.url)
-      .then((r) => r.blob())
-      .then((blob) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          sendResponse({ dataUrl: reader.result, type: blob.type });
-        };
-        reader.readAsDataURL(blob);
-      })
-      .catch((err) => {
-        sendResponse({ error: err.message });
       });
     return true;
   }
