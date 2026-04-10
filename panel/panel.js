@@ -5,6 +5,8 @@
 // ─── State ───────────────────────────────────────────────────────────
 let allAssets = [];       // All captured resources (from background + DOM)
 let domData = null;       // DOM analysis data (colors, fonts, meta)
+let platformData = null;  // Platform-specific data (Instagram, YouTube, etc.)
+let detectedPlatform = null; // Current platform name or null
 let selectedUrls = new Set();
 let currentTab = "all";   // Active filter tab
 let hideSmall = true;     // Filter toggle state
@@ -27,6 +29,36 @@ const MIME_TO_EXT = {
 
 const SIZE_THRESHOLD = 5 * 1024; // 5KB — below this is likely UI junk
 
+// ─── Platform Detection ──────────────────────────────────────────────
+const PLATFORM_PATTERNS = {
+  instagram: /instagram\.com/,
+  youtube:   /youtube\.com|youtu\.be/,
+  twitter:   /twitter\.com|x\.com/,
+  tiktok:    /tiktok\.com/,
+  facebook:  /facebook\.com/,
+};
+
+const PLATFORM_LABELS = {
+  instagram: "Instagram",
+  youtube:   "YouTube",
+  twitter:   "Twitter / X",
+  tiktok:    "TikTok",
+  facebook:  "Facebook",
+};
+
+const PLATFORM_SCRIPTS = {
+  instagram: "platforms/instagram.js",
+  // Future: youtube, twitter, tiktok, facebook
+};
+
+function detectPlatform(url) {
+  if (!url) return null;
+  for (const [platform, pattern] of Object.entries(PLATFORM_PATTERNS)) {
+    if (pattern.test(url)) return platform;
+  }
+  return null;
+}
+
 // ─── Init ────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
   initTabNav();
@@ -48,10 +80,15 @@ async function scanCurrentTab() {
     document.getElementById("siteName").textContent = "—";
   }
 
+  // Detect platform
+  detectedPlatform = detectPlatform(tab.url);
+  renderPlatformBadge();
+
   // Bail on restricted pages (chrome://, arc://, etc.)
   if (isRestrictedTab(tab)) {
     allAssets = [];
     domData = null;
+    platformData = null;
     renderGrid();
     renderBadges();
     return;
@@ -65,14 +102,18 @@ async function scanCurrentTab() {
   const networkResources = bgResponse?.resources || [];
 
   // 2. Get DOM analysis from content script
-  //    If the content script isn't responding (extension reload, first open),
-  //    inject it programmatically and retry.
   domData = await queryContentScript(tab.id);
 
-  // 3. Merge network resources with DOM context
-  allAssets = enrichAssets(networkResources, domData?.imageContext || []);
+  // 3. If on a known platform, also query the platform-specific script
+  platformData = null;
+  if (detectedPlatform && PLATFORM_SCRIPTS[detectedPlatform]) {
+    platformData = await queryPlatformScript(tab.id, detectedPlatform);
+  }
 
-  // 4. Render
+  // 4. Merge network resources with DOM context + platform assets
+  allAssets = enrichAssets(networkResources, domData?.imageContext || [], platformData);
+
+  // 5. Render
   renderGrid();
   renderBadges();
 
@@ -80,6 +121,11 @@ async function scanCurrentTab() {
     renderColors(domData.colors);
     renderFonts(domData.fontInfo);
     renderMeta(domData.pageMeta);
+  }
+
+  // Show platform meta if available
+  if (platformData?.platformMeta) {
+    renderPlatformMeta(platformData.platformMeta, detectedPlatform);
   }
 }
 
@@ -114,8 +160,34 @@ async function queryContentScript(tabId) {
   }
 }
 
+// ─── Platform script communication ───────────────────────────────────
+async function queryPlatformScript(tabId, platform) {
+  const scriptFile = PLATFORM_SCRIPTS[platform];
+  if (!scriptFile) return null;
+
+  // Try messaging the already-injected platform script
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { action: "analyzePlatform" });
+    if (response && response.platform) return response;
+  } catch { /* platform script not available */ }
+
+  // Inject platform script and retry
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [scriptFile],
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    const response = await chrome.tabs.sendMessage(tabId, { action: "analyzePlatform" });
+    return response && response.platform ? response : null;
+  } catch (err) {
+    console.warn(`Platform script injection failed (${platform}):`, err);
+    return null;
+  }
+}
+
 // ─── Enrich network assets with DOM context ──────────────────────────
-function enrichAssets(networkResources, imageContext) {
+function enrichAssets(networkResources, imageContext, platformResult) {
   // Build a lookup from DOM image context
   const contextMap = new Map();
   for (const img of imageContext) {
@@ -134,15 +206,16 @@ function enrichAssets(networkResources, imageContext) {
       domHeight: ctx?.height || 0,
       displayName: buildDisplayName(res, ctx),
       selected: false,
+      platformTag: null,
     };
   });
 
   // Also add DOM-discovered images not in network resources
-  // (e.g., background images that may have loaded before monitoring started)
-  const networkUrls = new Set(networkResources.map((r) => r.url));
+  const allUrls = new Set(networkResources.map((r) => r.url));
   for (const img of imageContext) {
-    if (!networkUrls.has(img.url)) {
+    if (!allUrls.has(img.url)) {
       const ext = getExtFromUrl(img.url);
+      allUrls.add(img.url);
       enriched.push({
         url: img.url,
         type: "image",
@@ -158,14 +231,60 @@ function enrichAssets(networkResources, imageContext) {
         domHeight: img.height || 0,
         displayName: buildDisplayName({ url: img.url, ext }, img),
         selected: false,
+        platformTag: null,
       });
     }
   }
 
-  // Sort: logos first, UI last, then by size descending
+  // Merge platform-specific assets (higher quality, platform-aware)
+  if (platformResult?.assets) {
+    for (const pAsset of platformResult.assets) {
+      if (allUrls.has(pAsset.url)) {
+        // Asset already exists — upgrade it with platform context
+        const existing = enriched.find((a) => a.url === pAsset.url);
+        if (existing) {
+          existing.platformTag = pAsset.platformTag || null;
+          existing.context = pAsset.context || existing.context;
+          existing.isLogo = pAsset.isLogo || existing.isLogo;
+          existing.isUI = false; // Platform assets are never UI junk
+          if (pAsset.alt && pAsset.alt.length > existing.alt.length) {
+            existing.alt = pAsset.alt;
+            existing.displayName = buildDisplayName(existing, pAsset);
+          }
+        }
+      } else {
+        // New asset from platform script — add it
+        const ext = getExtFromUrl(pAsset.url);
+        allUrls.add(pAsset.url);
+        enriched.push({
+          url: pAsset.url,
+          type: pAsset.type || "image",
+          contentType: "",
+          contentLength: -1,
+          ext,
+          timestamp: Date.now(),
+          alt: pAsset.alt || "",
+          context: pAsset.context || "platform",
+          isLogo: pAsset.isLogo || false,
+          isUI: false,
+          domWidth: pAsset.width || 0,
+          domHeight: pAsset.height || 0,
+          displayName: buildDisplayName({ url: pAsset.url, ext }, pAsset),
+          selected: false,
+          platformTag: pAsset.platformTag || null,
+          poster: pAsset.poster || null,
+          isBlob: pAsset.isBlob || false,
+        });
+      }
+    }
+  }
+
+  // Sort: logos first, platform-tagged next, UI last, then by size descending
   enriched.sort((a, b) => {
     if (a.isLogo && !b.isLogo) return -1;
     if (!a.isLogo && b.isLogo) return 1;
+    if (a.platformTag && !b.platformTag) return -1;
+    if (!a.platformTag && b.platformTag) return 1;
     if (a.isUI && !b.isUI) return 1;
     if (!a.isUI && b.isUI) return -1;
     const sizeA = a.contentLength > 0 ? a.contentLength : 0;
@@ -304,6 +423,20 @@ function createAssetCard(asset) {
     logoBadge.className = "card-logo-badge";
     logoBadge.textContent = "logo";
     card.appendChild(logoBadge);
+  }
+
+  // Platform tag badge (e.g., "instagram-post", "instagram-reel-thumb")
+  if (asset.platformTag) {
+    const platformBadge = document.createElement("span");
+    platformBadge.className = "card-platform-badge";
+    // Short readable label
+    const label = asset.platformTag
+      .replace("instagram-", "ig:")
+      .replace("youtube-", "yt:")
+      .replace("twitter-", "tw:")
+      .replace("tiktok-", "tt:");
+    platformBadge.textContent = label;
+    card.appendChild(platformBadge);
   }
 
   // Thumbnail
@@ -487,8 +620,30 @@ function initControls() {
     // Deep scan: auto-scrolls the page to trigger lazy loaders
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab && !isRestrictedTab(tab)) {
+      // Detect platform for this scan
+      detectedPlatform = detectPlatform(tab.url);
+      renderPlatformBadge();
+
+      // If on a known platform, use platform-specific deep scan
+      if (detectedPlatform && PLATFORM_SCRIPTS[detectedPlatform]) {
+        try {
+          platformData = await chrome.tabs.sendMessage(tab.id, { action: "deepScanPlatform" });
+        } catch {
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              files: [PLATFORM_SCRIPTS[detectedPlatform]],
+            });
+            await new Promise((r) => setTimeout(r, 300));
+            platformData = await chrome.tabs.sendMessage(tab.id, { action: "deepScanPlatform" });
+          } catch {
+            platformData = null;
+          }
+        }
+      }
+
       try {
-        // Try deep scan first (auto-scroll + analyze)
+        // Also run generic deep scan (for colors, fonts, meta)
         domData = await chrome.tabs.sendMessage(tab.id, { action: "deepScan" });
       } catch {
         // Fallback: inject + deep scan
@@ -511,7 +666,7 @@ function initControls() {
       });
       const networkResources = bgResponse?.resources || [];
 
-      allAssets = enrichAssets(networkResources, domData?.imageContext || []);
+      allAssets = enrichAssets(networkResources, domData?.imageContext || [], platformData);
     }
 
     renderGrid();
@@ -520,6 +675,9 @@ function initControls() {
       renderColors(domData.colors);
       renderFonts(domData.fontInfo);
       renderMeta(domData.pageMeta);
+    }
+    if (platformData?.platformMeta) {
+      renderPlatformMeta(platformData.platformMeta, detectedPlatform);
     }
 
     btn.disabled = false;
@@ -875,4 +1033,52 @@ function showToast(message) {
   toast.textContent = message;
   toast.classList.add("visible");
   setTimeout(() => toast.classList.remove("visible"), 2500);
+}
+
+// ─── Platform UI ─────────────────────────────────────────────────────
+
+function renderPlatformBadge() {
+  let badge = document.getElementById("platformBadge");
+  if (!detectedPlatform) {
+    if (badge) badge.style.display = "none";
+    return;
+  }
+
+  if (!badge) {
+    // Create badge element dynamically (first time)
+    badge = document.createElement("span");
+    badge.id = "platformBadge";
+    badge.className = "platform-badge";
+    const siteName = document.getElementById("siteName");
+    siteName.parentNode.insertBefore(badge, siteName.nextSibling);
+  }
+
+  badge.textContent = PLATFORM_LABELS[detectedPlatform] || detectedPlatform;
+  badge.className = `platform-badge platform-${detectedPlatform}`;
+  badge.style.display = "inline-flex";
+}
+
+function renderPlatformMeta(meta, platform) {
+  const container = document.getElementById("metaInfo");
+  if (!container || !meta) return;
+
+  // Add platform-specific rows to the existing meta section
+  const platformRows = [];
+
+  if (platform === "instagram") {
+    if (meta.username) platformRows.push({ label: "user", value: `@${meta.username}` });
+    if (meta.fullName) platformRows.push({ label: "name", value: meta.fullName });
+    if (meta.bio) platformRows.push({ label: "bio", value: meta.bio.slice(0, 120) + (meta.bio.length > 120 ? "…" : "") });
+    if (meta.isVerified) platformRows.push({ label: "verified", value: "✓" });
+    if (meta.isCarousel) platformRows.push({ label: "carousel", value: "swipe for more slides" });
+    if (meta.author) platformRows.push({ label: "author", value: `@${meta.author}` });
+    if (meta.caption) platformRows.push({ label: "caption", value: meta.caption.slice(0, 120) + (meta.caption.length > 120 ? "…" : "") });
+  }
+
+  for (const row of platformRows) {
+    const div = document.createElement("div");
+    div.className = "meta-row platform-meta-row";
+    div.innerHTML = `<span class="meta-label">${row.label}</span><span class="meta-value">${row.value}</span>`;
+    container.appendChild(div);
+  }
 }

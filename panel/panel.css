@@ -502,6 +502,70 @@ video.card-thumb {
   backdrop-filter: blur(4px);
 }
 
+.card-platform-badge {
+  position: absolute;
+  bottom: 32px;
+  right: 6px;
+  font-size: 7px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(199, 125, 255, 0.2);
+  color: var(--accent-secondary);
+  backdrop-filter: blur(4px);
+  white-space: nowrap;
+}
+
+/* ─── Platform Badge (header) ─────────────────────────────────────── */
+.platform-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.platform-badge.platform-instagram {
+  background: linear-gradient(135deg, rgba(225, 48, 108, 0.2), rgba(193, 53, 132, 0.2));
+  color: #e1306c;
+  border: 1px solid rgba(225, 48, 108, 0.3);
+}
+
+.platform-badge.platform-youtube {
+  background: rgba(255, 0, 0, 0.15);
+  color: #ff4444;
+  border: 1px solid rgba(255, 0, 0, 0.25);
+}
+
+.platform-badge.platform-twitter {
+  background: rgba(29, 161, 242, 0.15);
+  color: #1da1f2;
+  border: 1px solid rgba(29, 161, 242, 0.25);
+}
+
+.platform-badge.platform-tiktok {
+  background: rgba(0, 242, 234, 0.15);
+  color: #00f2ea;
+  border: 1px solid rgba(0, 242, 234, 0.25);
+}
+
+.platform-badge.platform-facebook {
+  background: rgba(24, 119, 242, 0.15);
+  color: #1877f2;
+  border: 1px solid rgba(24, 119, 242, 0.25);
+}
+
+/* Platform meta rows in Brand tab */
+.platform-meta-row {
+  border-left: 2px solid var(--accent-secondary);
+  padding-left: 8px;
+}
+
 /* ─── Colors Panel ────────────────────────────────────────────────── */
 .colors-panel {
   flex: 1;
