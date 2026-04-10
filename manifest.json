@@ -37,6 +37,12 @@
     },
     {
       "matches": ["*://*.instagram.com/*"],
+      "js": ["platforms/instagram-video-intercept.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://*.instagram.com/*"],
       "js": ["platforms/instagram.js"],
       "run_at": "document_idle"
     }

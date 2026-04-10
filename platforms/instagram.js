@@ -21,6 +21,48 @@ if (window.__NAS_INSTAGRAM_LOADED__) {
 // ─── Constants ───────────────────────────────────────────────────────
 const IG_CDN_PATTERN = /scontent[.-]|cdninstagram\.com|fbcdn\.net/;
 
+// ─── MSE Video Bridge ────────────────────────────────────────────────
+// The video interceptor runs in MAIN world (page context).
+// Content script (ISOLATED world) communicates via window.postMessage.
+
+function requestMSEVideoList() {
+  return new Promise((resolve) => {
+    const handler = (event) => {
+      if (event.data?.source === "nas-mse" && event.data?.type === "video-list") {
+        window.removeEventListener("message", handler);
+        resolve(event.data.videos || []);
+      }
+    };
+    window.addEventListener("message", handler);
+    window.postMessage({ source: "nas-content", type: "get-video-list" }, "*");
+
+    // Timeout after 500ms — interceptor might not be loaded
+    setTimeout(() => {
+      window.removeEventListener("message", handler);
+      resolve([]);
+    }, 500);
+  });
+}
+
+function requestMSEVideoData(videoId) {
+  return new Promise((resolve) => {
+    const handler = (event) => {
+      if (event.data?.source === "nas-mse" && event.data?.type === "video-data" && event.data?.id === videoId) {
+        window.removeEventListener("message", handler);
+        resolve(event.data.dataUrl || null);
+      }
+    };
+    window.addEventListener("message", handler);
+    window.postMessage({ source: "nas-content", type: "get-video-data", id: videoId }, "*");
+
+    // Timeout after 5s for large videos
+    setTimeout(() => {
+      window.removeEventListener("message", handler);
+      resolve(null);
+    }, 5000);
+  });
+}
+
 // ─── Page Type Detection ─────────────────────────────────────────────
 
 function detectPageType() {
@@ -660,23 +702,88 @@ function analyzeInstagram() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "analyzePlatform") {
-    try {
-      const result = analyzeInstagram();
-      sendResponse(result);
-    } catch (err) {
-      console.error("NAS Instagram script error:", err);
-      sendResponse({ platform: "instagram", error: err.message });
-    }
+    // Async: gather MSE captures alongside DOM analysis
+    (async () => {
+      try {
+        const result = analyzeInstagram();
+
+        // Check for MSE-captured videos
+        const mseVideos = await requestMSEVideoList();
+        if (mseVideos.length > 0) {
+          // Add captured videos as assets (these are complete, playable files)
+          for (const video of mseVideos) {
+            // Only include captures with meaningful data (>50KB = has actual content)
+            if (video.totalBytes < 50000) continue;
+            result.assets.push({
+              url: `nas-mse://${video.id}`,
+              type: "video",
+              context: "mse-capture",
+              isLogo: false,
+              isUI: false,
+              alt: "",
+              width: 0,
+              height: 0,
+              platformTag: "instagram-video",
+              isMSECapture: true,
+              mseVideoId: video.id,
+              mseBytes: video.totalBytes,
+              mseSegments: video.segmentCount,
+            });
+          }
+        }
+
+        sendResponse(result);
+      } catch (err) {
+        console.error("NAS Instagram script error:", err);
+        sendResponse({ platform: "instagram", error: err.message });
+      }
+    })();
     return true;
   }
 
   // Deep scan variant — scroll the page to load more grid posts, then analyze
   if (message.action === "deepScanPlatform") {
     deepScanInstagram()
-      .then((result) => sendResponse(result))
+      .then(async (result) => {
+        // Also gather MSE captures after deep scan
+        const mseVideos = await requestMSEVideoList();
+        if (mseVideos.length > 0) {
+          for (const video of mseVideos) {
+            if (video.totalBytes < 50000) continue;
+            result.assets.push({
+              url: `nas-mse://${video.id}`,
+              type: "video",
+              context: "mse-capture",
+              isLogo: false,
+              isUI: false,
+              alt: "",
+              width: 0,
+              height: 0,
+              platformTag: "instagram-video",
+              isMSECapture: true,
+              mseVideoId: video.id,
+              mseBytes: video.totalBytes,
+              mseSegments: video.segmentCount,
+            });
+          }
+        }
+        sendResponse(result);
+      })
       .catch((err) => {
         console.error("NAS Instagram deep scan error:", err);
         sendResponse({ platform: "instagram", error: err.message });
+      });
+    return true;
+  }
+
+  // Fetch reassembled MSE video data — called by panel during download
+  if (message.action === "fetchMSEVideo") {
+    requestMSEVideoData(message.videoId)
+      .then((dataUrl) => {
+        sendResponse({ dataUrl });
+      })
+      .catch((err) => {
+        sendResponse({ error: err.message });
       });
     return true;
   }

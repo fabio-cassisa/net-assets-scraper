@@ -199,15 +199,14 @@ function enrichAssets(networkResources, imageContext, platformResult) {
     contextMap.set(img.url, img);
   }
 
-  // On social platforms, filter out fragmented video segments from webRequest.
-  // Instagram/TikTok/etc deliver video via DASH/MSE — webRequest captures small
-  // moof+mdat fragments (20-500KB) instead of complete files (1MB+).
-  // The platform script extracts the real video URLs from meta tags instead.
+  // On social platforms, filter out ALL video from webRequest.
+  // Instagram/TikTok/etc deliver video via DASH/MSE — webRequest only captures
+  // moof+mdat fragments (unplayable without init segment). The MSE interceptor
+  // captures and reassembles complete videos instead.
   const isStreamingPlatform = platformResult?.platform && ["instagram", "tiktok"].includes(platformResult.platform);
-  const VIDEO_FRAGMENT_THRESHOLD = 500 * 1024; // 500KB
 
   const filtered = isStreamingPlatform
-    ? networkResources.filter((r) => !(r.type === "video" && r.contentLength > 0 && r.contentLength < VIDEO_FRAGMENT_THRESHOLD))
+    ? networkResources.filter((r) => r.type !== "video")
     : networkResources;
 
   const enriched = filtered.map((res) => {
@@ -275,9 +274,9 @@ function enrichAssets(networkResources, imageContext, platformResult) {
         enriched.push({
           url: pAsset.url,
           type: pAsset.type || "image",
-          contentType: "",
-          contentLength: -1,
-          ext,
+          contentType: pAsset.isMSECapture ? "video/mp4" : "",
+          contentLength: pAsset.mseBytes || -1,
+          ext: pAsset.isMSECapture ? "mp4" : ext,
           timestamp: Date.now(),
           alt: pAsset.alt || "",
           context: pAsset.context || "platform",
@@ -285,11 +284,15 @@ function enrichAssets(networkResources, imageContext, platformResult) {
           isUI: false,
           domWidth: pAsset.width || 0,
           domHeight: pAsset.height || 0,
-          displayName: buildDisplayName({ url: pAsset.url, ext }, pAsset),
+          displayName: pAsset.isMSECapture
+            ? `instagram-video-${(pAsset.mseVideoId || "").replace(/[^a-z0-9]/gi, "").slice(-8)}.mp4`
+            : buildDisplayName({ url: pAsset.url, ext }, pAsset),
           selected: false,
           platformTag: pAsset.platformTag || null,
           poster: pAsset.poster || null,
           isBlob: pAsset.isBlob || false,
+          isMSECapture: pAsset.isMSECapture || false,
+          mseVideoId: pAsset.mseVideoId || null,
         });
       }
     }
@@ -503,20 +506,26 @@ function createAssetCard(asset) {
     };
     card.appendChild(img);
   } else if (asset.type === "video") {
-    const video = document.createElement("video");
-    video.className = "card-thumb";
-    video.src = asset.url;
-    video.preload = "metadata";
-    video.muted = true;
-    video.playsInline = true;
-    // Seek slightly in to grab a real frame (some videos have blank first frames)
-    video.addEventListener("loadedmetadata", () => {
-      video.currentTime = Math.min(1, video.duration * 0.1);
-    });
-    video.onerror = () => {
-      video.replaceWith(createPlaceholder("🎬"));
-    };
-    card.appendChild(video);
+    if (asset.isMSECapture) {
+      // MSE-captured videos can't preview — show placeholder with size info
+      const sizeStr = asset.contentLength > 0 ? formatBytes(asset.contentLength) : "";
+      card.appendChild(createPlaceholder(`🎬${sizeStr ? "\n" + sizeStr : ""}`));
+    } else {
+      const video = document.createElement("video");
+      video.className = "card-thumb";
+      video.src = asset.url;
+      video.preload = "metadata";
+      video.muted = true;
+      video.playsInline = true;
+      // Seek slightly in to grab a real frame (some videos have blank first frames)
+      video.addEventListener("loadedmetadata", () => {
+        video.currentTime = Math.min(1, video.duration * 0.1);
+      });
+      video.onerror = () => {
+        video.replaceWith(createPlaceholder("🎬"));
+      };
+      card.appendChild(video);
+    }
   } else if (asset.type === "font") {
     card.appendChild(createFontPreview(asset));
   } else if (asset.type === "audio") {
@@ -926,7 +935,17 @@ async function downloadKit() {
       try {
         let blob;
 
-        if (asset.url.startsWith("blob:")) {
+        if (asset.isMSECapture && asset.mseVideoId) {
+          // MSE-captured video — reassemble via content script bridge
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          const result = await chrome.tabs.sendMessage(tab.id, {
+            action: "fetchMSEVideo",
+            videoId: asset.mseVideoId,
+          });
+          if (!result?.dataUrl) throw new Error("MSE video reassembly failed");
+          const res = await fetch(result.dataUrl);
+          blob = await res.blob();
+        } else if (asset.url.startsWith("blob:")) {
           // Blob URLs are page-scoped — proxy through content script
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
           const result = await chrome.tabs.sendMessage(tab.id, {
