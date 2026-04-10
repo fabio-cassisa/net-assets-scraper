@@ -331,6 +331,7 @@ function extractImageContext() {
         alt: el.alt || "",
         context: context.zone,
         isLogo: context.isLogo,
+        isUI: context.isUI,
         width: el.naturalWidth || el.width || 0,
         height: el.naturalHeight || el.height || 0,
       });
@@ -343,7 +344,8 @@ function extractImageContext() {
 function getElementContext(el) {
   const zone = getZone(el);
   const isLogo = detectLogo(el);
-  return { zone, isLogo };
+  const isUI = detectUIElement(el);
+  return { zone, isLogo, isUI };
 }
 
 function getZone(el) {
@@ -363,6 +365,46 @@ function detectLogo(el) {
 
   const hints = [alt, cls, id, src].join(" ");
   return /logo|brand|site-icon|site_icon/.test(hints);
+}
+
+// Detect UI/chrome elements — nav icons, social icons, decorative SVGs, etc.
+const UI_HINTS = /icon|arrow|chevron|caret|close|menu|hamburger|toggle|spinner|loader|breadcrumb|pagination|social|share|facebook|twitter|instagram|linkedin|youtube|tiktok|pinterest|whatsapp|telegram|discord|github|mailto|search-icon|nav-|ui-|btn-|button-|widget/;
+const UI_ICON_DOMAINS = /fontawesome|cdnjs|googleapis.*icon|material.*icon|use\.typekit|icomoon/;
+
+function detectUIElement(el) {
+  // 1. Very small images are almost always UI (icons, bullets, decorations)
+  const w = el.naturalWidth || el.width || el.offsetWidth || 0;
+  const h = el.naturalHeight || el.height || el.offsetHeight || 0;
+  if (w > 0 && h > 0 && w <= 48 && h <= 48) return true;
+
+  // 2. Inside interactive/nav elements
+  if (el.closest("button, [role='button'], nav a, .nav, .navbar, .breadcrumb, .pagination, .social, .share")) {
+    return true;
+  }
+
+  // 3. Class/id/alt/src hint matching
+  const alt = (el.alt || "").toLowerCase();
+  const cls = (typeof el.className === "string" ? el.className : "").toLowerCase();
+  const id = (el.id || "").toLowerCase();
+  const src = (el.src || el.getAttribute("data-src") || "").toLowerCase();
+  const hints = [alt, cls, id, src].join(" ");
+
+  if (UI_HINTS.test(hints)) return true;
+
+  // 4. Icon CDN domains
+  if (UI_ICON_DOMAINS.test(src)) return true;
+
+  // 5. Inline SVGs used as icons (parent has icon-like class or small container)
+  const parent = el.parentElement;
+  if (parent) {
+    const parentCls = (typeof parent.className === "string" ? parent.className : "").toLowerCase();
+    const parentRole = (parent.getAttribute("role") || "").toLowerCase();
+    if (UI_HINTS.test(parentCls) || parentRole === "button" || parentRole === "navigation") {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ─── Font Extraction ─────────────────────────────────────────────────

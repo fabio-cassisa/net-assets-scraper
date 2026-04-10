@@ -233,6 +233,12 @@ body {
   gap: 6px;
 }
 
+.controls-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .filter-toggle {
   display: flex;
   align-items: center;

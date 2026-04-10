@@ -8,6 +8,7 @@ let domData = null;       // DOM analysis data (colors, fonts, meta)
 let selectedUrls = new Set();
 let currentTab = "all";   // Active filter tab
 let hideSmall = true;     // Filter toggle state
+let hideUI = true;        // Filter UI elements (nav icons, social icons, etc.)
 
 // ─── File type constants ─────────────────────────────────────────────
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "svg", "avif", "ico", "bmp"]);
@@ -128,6 +129,7 @@ function enrichAssets(networkResources, imageContext) {
       alt: ctx?.alt || "",
       context: ctx?.context || "unknown",
       isLogo: ctx?.isLogo || false,
+      isUI: ctx?.isUI || false,
       domWidth: ctx?.width || 0,
       domHeight: ctx?.height || 0,
       displayName: buildDisplayName(res, ctx),
@@ -151,6 +153,7 @@ function enrichAssets(networkResources, imageContext) {
         alt: img.alt || "",
         context: img.context || "unknown",
         isLogo: img.isLogo || false,
+        isUI: img.isUI || false,
         domWidth: img.width || 0,
         domHeight: img.height || 0,
         displayName: buildDisplayName({ url: img.url, ext }, img),
@@ -159,10 +162,12 @@ function enrichAssets(networkResources, imageContext) {
     }
   }
 
-  // Sort: logos first, then by size descending, then by type
+  // Sort: logos first, UI last, then by size descending
   enriched.sort((a, b) => {
     if (a.isLogo && !b.isLogo) return -1;
     if (!a.isLogo && b.isLogo) return 1;
+    if (a.isUI && !b.isUI) return 1;
+    if (!a.isUI && b.isUI) return -1;
     const sizeA = a.contentLength > 0 ? a.contentLength : 0;
     const sizeB = b.contentLength > 0 ? b.contentLength : 0;
     return sizeB - sizeA;
@@ -267,6 +272,11 @@ function getFilteredAssets() {
       if (a.contentLength > 0 && a.contentLength < SIZE_THRESHOLD) return false;
       return true;
     });
+  }
+
+  // Hide UI elements (nav icons, social icons, decorations)
+  if (hideUI) {
+    filtered = filtered.filter((a) => !a.isUI);
   }
 
   return filtered;
@@ -438,6 +448,13 @@ function initControls() {
   document.getElementById("hideSmall").addEventListener("change", (e) => {
     hideSmall = e.target.checked;
     renderGrid();
+    renderBadges();
+  });
+
+  document.getElementById("hideUI").addEventListener("change", (e) => {
+    hideUI = e.target.checked;
+    renderGrid();
+    renderBadges();
   });
 
   document.getElementById("selectAll").addEventListener("click", () => {
@@ -538,9 +555,14 @@ function updateDownloadBar() {
 // ─── Render Badges ───────────────────────────────────────────────────
 function renderBadges() {
   const counts = { image: 0, video: 0, font: 0 };
-  const visible = hideSmall
-    ? allAssets.filter((a) => !(a.contentLength > 0 && a.contentLength < SIZE_THRESHOLD))
-    : allAssets;
+  let visible = allAssets;
+
+  if (hideSmall) {
+    visible = visible.filter((a) => !(a.contentLength > 0 && a.contentLength < SIZE_THRESHOLD));
+  }
+  if (hideUI) {
+    visible = visible.filter((a) => !a.isUI);
+  }
 
   for (const asset of visible) {
     if (counts[asset.type] !== undefined) counts[asset.type]++;
