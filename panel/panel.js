@@ -28,6 +28,11 @@ const MIME_TO_EXT = {
 };
 
 const SIZE_THRESHOLD = 5 * 1024; // 5KB — below this is likely UI junk
+const TINY_DIMENSION = 48;       // ≤48px on both axes = likely icon/bullet
+
+// URL patterns that strongly indicate UI/icon assets
+const UI_URL_PATTERNS = /favicon|icon[_\-./]|badge[_\-./]|arrow[_\-./]|chevron|sprite|pixel|tracking|spacer|blank\.|1x1|transparent\.|loader|spinner|bullet|check[-_.]?mark|close[-_.]?btn|hamburger|caret/i;
+const UI_CDN_PATTERNS = /fontawesome|icomoon|material.*icon|googleapis.*icon|use\.typekit/i;
 
 // ─── Platform Detection ──────────────────────────────────────────────
 const PLATFORM_PATTERNS = {
@@ -385,17 +390,32 @@ function getFilteredAssets() {
     filtered = filtered.filter((a) => a.type === currentTab);
   }
 
-  // Hide small toggle
+  // Hide small toggle — check contentLength AND DOM dimensions AND URL hints
   if (hideSmall) {
     filtered = filtered.filter((a) => {
+      // Known small file size
       if (a.contentLength > 0 && a.contentLength < SIZE_THRESHOLD) return false;
+      // Known tiny dimensions from DOM
+      const w = a.domWidth || 0;
+      const h = a.domHeight || 0;
+      if (w > 0 && h > 0 && w <= TINY_DIMENSION && h <= TINY_DIMENSION) return false;
       return true;
     });
   }
 
-  // Hide UI elements (nav icons, social icons, decorations)
+  // Hide UI elements — check isUI flag AND URL-based heuristics
   if (hideUI) {
-    filtered = filtered.filter((a) => !a.isUI);
+    filtered = filtered.filter((a) => {
+      // Content script flagged it as UI
+      if (a.isUI) return false;
+      // URL-based UI detection (fallback for network-only assets)
+      if (a.url && (UI_URL_PATTERNS.test(a.url) || UI_CDN_PATTERNS.test(a.url))) return false;
+      // Very small known dimensions are almost always UI
+      const w = a.domWidth || 0;
+      const h = a.domHeight || 0;
+      if (w > 0 && h > 0 && w <= 24 && h <= 24) return false;
+      return true;
+    });
   }
 
   return filtered;
@@ -450,9 +470,15 @@ function createAssetCard(asset) {
       img.replaceWith(createPlaceholder("🖼"));
     };
     // Detect images that load but are essentially empty (1×1 pixels, etc.)
+    // Also capture actual dimensions for smarter filtering on toggle
     img.onload = () => {
       if (img.naturalWidth <= 2 && img.naturalHeight <= 2) {
         img.replaceWith(createPlaceholder("·"));
+      }
+      // Back-fill dimensions if we didn't have them from DOM analysis
+      if (!asset.domWidth || !asset.domHeight) {
+        asset.domWidth = img.naturalWidth;
+        asset.domHeight = img.naturalHeight;
       }
     };
     card.appendChild(img);
@@ -713,14 +739,8 @@ function updateDownloadBar() {
 // ─── Render Badges ───────────────────────────────────────────────────
 function renderBadges() {
   const counts = { image: 0, video: 0, font: 0 };
-  let visible = allAssets;
-
-  if (hideSmall) {
-    visible = visible.filter((a) => !(a.contentLength > 0 && a.contentLength < SIZE_THRESHOLD));
-  }
-  if (hideUI) {
-    visible = visible.filter((a) => !a.isUI);
-  }
+  // Reuse the same filtering logic as the grid
+  const visible = getFilteredAssets();
 
   for (const asset of visible) {
     if (counts[asset.type] !== undefined) counts[asset.type]++;
