@@ -348,11 +348,20 @@ function getExtFromUrl(url) {
 }
 
 function sanitizeFilename(name) {
-  return name
+  const sanitized = name
     .replace(/[<>:"/\\|?*]/g, "_")
     .replace(/\s+/g, "-")
-    .toLowerCase()
-    .slice(0, 50);
+    .toLowerCase();
+
+  // Truncate base name but preserve file extension
+  const dotIdx = sanitized.lastIndexOf(".");
+  if (dotIdx > 0) {
+    const ext = sanitized.substring(dotIdx); // e.g. ".jpg"
+    if (ext.length >= 2 && ext.length <= 6) {
+      return sanitized.substring(0, dotIdx).slice(0, 60) + ext;
+    }
+  }
+  return sanitized.slice(0, 65);
 }
 
 // ─── Render Grid ─────────────────────────────────────────────────────
