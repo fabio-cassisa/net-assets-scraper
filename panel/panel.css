@@ -378,7 +378,7 @@ body {
 
 .card-thumb {
   width: 100%;
-  aspect-ratio: 1;
+  aspect-ratio: 3 / 4;
   object-fit: cover;
   background: var(--bg-tertiary);
   display: block;
@@ -386,7 +386,7 @@ body {
 
 .card-thumb-placeholder {
   width: 100%;
-  aspect-ratio: 1;
+  aspect-ratio: 3 / 4;
   display: flex;
   align-items: center;
   justify-content: center;
