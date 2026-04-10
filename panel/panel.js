@@ -211,20 +211,24 @@ function sanitizeFilename(name) {
 }
 
 // ─── Render Grid ─────────────────────────────────────────────────────
+// Cached reference — survives grid.innerHTML = "" clears
+let emptyStateEl = null;
+
 function renderGrid() {
   const grid = document.getElementById("assetGrid");
-  const empty = document.getElementById("emptyState");
-
+  if (!emptyStateEl) emptyStateEl = document.getElementById("emptyState");
   const filtered = getFilteredAssets();
 
   if (filtered.length === 0) {
     grid.innerHTML = "";
-    grid.appendChild(empty);
-    empty.style.display = "flex";
+    grid.appendChild(emptyStateEl);
+    emptyStateEl.style.display = "flex";
     return;
   }
 
-  empty.style.display = "none";
+  emptyStateEl.style.display = "none";
+  // Detach empty state before clearing so it survives
+  if (emptyStateEl.parentNode === grid) grid.removeChild(emptyStateEl);
   grid.innerHTML = "";
 
   for (const asset of filtered) {
@@ -341,9 +345,9 @@ function initTabNav() {
   const tabNav = document.getElementById("tabNav");
   tabNav.addEventListener("click", (e) => {
     const btn = e.target.closest(".filter-chip");
-    if (!btn || btn.classList.contains("scan-chip")) return;
+    if (!btn) return;
 
-    tabNav.querySelectorAll(".filter-chip:not(.scan-chip)").forEach((b) => b.classList.remove("active"));
+    tabNav.querySelectorAll(".filter-chip").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
 
     currentTab = btn.dataset.tab;
