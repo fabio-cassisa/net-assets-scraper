@@ -468,6 +468,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     return true; // async
   }
+
+  // Proxy fetch for blob: URLs (only accessible from the page's origin)
+  if (message.action === "fetchBlob") {
+    fetch(message.url)
+      .then((r) => r.blob())
+      .then((blob) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          sendResponse({ dataUrl: reader.result, type: blob.type });
+        };
+        reader.readAsDataURL(blob);
+      })
+      .catch((err) => {
+        sendResponse({ error: err.message });
+      });
+    return true; // async
+  }
 });
 
 } // end duplicate injection guard

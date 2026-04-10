@@ -47,6 +47,15 @@ async function scanCurrentTab() {
     document.getElementById("siteName").textContent = "—";
   }
 
+  // Bail on restricted pages (chrome://, arc://, etc.)
+  if (isRestrictedTab(tab)) {
+    allAssets = [];
+    domData = null;
+    renderGrid();
+    renderBadges();
+    return;
+  }
+
   // 1. Get network resources from background service worker
   const bgResponse = await chrome.runtime.sendMessage({
     action: "getResources",
@@ -74,6 +83,13 @@ async function scanCurrentTab() {
 }
 
 // ─── Content script communication (with auto-inject fallback) ────────
+const RESTRICTED_PROTOCOLS = ["chrome:", "chrome-extension:", "arc:", "about:", "devtools:", "edge:", "brave:"];
+
+function isRestrictedTab(tab) {
+  if (!tab?.url) return true;
+  return RESTRICTED_PROTOCOLS.some((p) => tab.url.startsWith(p));
+}
+
 async function queryContentScript(tabId) {
   // Try messaging the existing content script first
   try {
@@ -574,8 +590,23 @@ async function downloadKit() {
     // Download each selected asset
     const promises = selected.map(async (asset) => {
       try {
-        const response = await fetch(asset.url);
-        const blob = await response.blob();
+        let blob;
+
+        if (asset.url.startsWith("blob:")) {
+          // Blob URLs are page-scoped — proxy through content script
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          const result = await chrome.tabs.sendMessage(tab.id, {
+            action: "fetchBlob",
+            url: asset.url,
+          });
+          if (result?.error) throw new Error(result.error);
+          // Convert data URL back to blob
+          const res = await fetch(result.dataUrl);
+          blob = await res.blob();
+        } else {
+          const response = await fetch(asset.url);
+          blob = await response.blob();
+        }
 
         // Sniff actual content type from blob if available
         const actualType = blob.type || asset.contentType;
