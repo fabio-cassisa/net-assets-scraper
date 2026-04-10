@@ -1,7 +1,7 @@
 // ─── Net Assets Scraper V2 — Service Worker ─────────────────────────
 // Passively captures network resources via webRequest API.
-// Stores metadata per tab in chrome.storage.session.
-// Communicates with side panel + content script via messaging.
+// Stores metadata per tab in memory.
+// Communicates with popup panel + content script via messaging.
 
 // ─── Constants ───────────────────────────────────────────────────────
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "svg", "avif", "ico", "bmp"]);
@@ -35,7 +35,6 @@ function getExtensionFromUrl(url) {
     const dot = pathname.lastIndexOf(".");
     if (dot === -1 || dot === pathname.length - 1) return "";
     const ext = pathname.substring(dot + 1).toLowerCase();
-    // Guard against long strings that aren't extensions
     return ext.length <= 6 ? ext : "";
   } catch {
     return "";
@@ -82,51 +81,60 @@ function classifyResource(url, contentType) {
 }
 
 // ─── webRequest listener — passive resource capture ──────────────────
-chrome.webRequest.onCompleted.addListener(
-  (details) => {
-    // Only track main frame and sub-resource requests
-    if (details.tabId < 0) return;
+// Try with responseHeaders first; if the browser doesn't support it, fall back
+try {
+  chrome.webRequest.onCompleted.addListener(
+    handleRequest,
+    { urls: ["<all_urls>"] },
+    ["responseHeaders"]
+  );
+} catch {
+  // Fallback: listen without responseHeaders (classify by URL extension only)
+  chrome.webRequest.onCompleted.addListener(
+    handleRequest,
+    { urls: ["<all_urls>"] }
+  );
+}
 
-    const url = details.url;
+function handleRequest(details) {
+  if (details.tabId < 0) return;
 
-    // Skip data URIs, chrome-extension URLs, and tracking domains
-    if (url.startsWith("data:") || url.startsWith("chrome") || url.startsWith("moz-extension")) return;
-    if (isSkippedDomain(url)) return;
+  const url = details.url;
 
-    // Get content-type from response headers
-    const contentTypeHeader = (details.responseHeaders || []).find(
-      (h) => h.name.toLowerCase() === "content-type"
-    );
-    const contentType = contentTypeHeader ? contentTypeHeader.value.split(";")[0].trim() : "";
-    const contentLengthHeader = (details.responseHeaders || []).find(
-      (h) => h.name.toLowerCase() === "content-length"
-    );
-    const contentLength = contentLengthHeader ? parseInt(contentLengthHeader.value, 10) : -1;
+  // Skip data URIs, browser-internal URLs, and tracking domains
+  if (url.startsWith("data:") || url.startsWith("chrome") || url.startsWith("moz-extension") || url.startsWith("arc:")) return;
+  if (isSkippedDomain(url)) return;
 
-    const type = classifyResource(url, contentType);
-    if (!type) return; // Not an asset we care about
+  // Get content-type from response headers (may be absent if listener fallback)
+  const contentTypeHeader = (details.responseHeaders || []).find(
+    (h) => h.name.toLowerCase() === "content-type"
+  );
+  const contentType = contentTypeHeader ? contentTypeHeader.value.split(";")[0].trim() : "";
+  const contentLengthHeader = (details.responseHeaders || []).find(
+    (h) => h.name.toLowerCase() === "content-length"
+  );
+  const contentLength = contentLengthHeader ? parseInt(contentLengthHeader.value, 10) : -1;
 
-    // Get or create the resource map for this tab
-    if (!tabResources.has(details.tabId)) {
-      tabResources.set(details.tabId, new Map());
-    }
-    const resources = tabResources.get(details.tabId);
+  const type = classifyResource(url, contentType);
+  if (!type) return;
 
-    // Deduplicate — only store first occurrence of each URL
-    if (resources.has(url)) return;
+  if (!tabResources.has(details.tabId)) {
+    tabResources.set(details.tabId, new Map());
+  }
+  const resources = tabResources.get(details.tabId);
 
-    resources.set(url, {
-      url,
-      type,
-      contentType,
-      contentLength,
-      ext: getExtensionFromUrl(url),
-      timestamp: Date.now(),
-    });
-  },
-  { urls: ["<all_urls>"] },
-  ["responseHeaders"]
-);
+  // Deduplicate
+  if (resources.has(url)) return;
+
+  resources.set(url, {
+    url,
+    type,
+    contentType,
+    contentLength,
+    ext: getExtensionFromUrl(url),
+    timestamp: Date.now(),
+  });
+}
 
 // ─── Tab lifecycle — cleanup on close/navigate ───────────────────────
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -134,7 +142,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  // Clear resources when a tab navigates to a new page
   if (changeInfo.status === "loading" && changeInfo.url) {
     tabResources.delete(tabId);
   }
@@ -167,11 +174,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ─── Install log ─────────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(() => {
   console.log("Net Assets Scraper V2 installed.");
-
-  // Enable side panel on action click for browsers that support it
-  if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
-    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
-      // Side panel not supported (e.g., Arc) — popup fallback handles it
-    });
-  }
 });
