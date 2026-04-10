@@ -55,12 +55,9 @@ async function scanCurrentTab() {
   const networkResources = bgResponse?.resources || [];
 
   // 2. Get DOM analysis from content script
-  try {
-    const [domResponse] = await chrome.tabs.sendMessage(tab.id, { action: "analyzeDOM" }).then(r => [r]).catch(() => [null]);
-    domData = domResponse;
-  } catch {
-    domData = null;
-  }
+  //    If the content script isn't responding (extension reload, first open),
+  //    inject it programmatically and retry.
+  domData = await queryContentScript(tab.id);
 
   // 3. Merge network resources with DOM context
   allAssets = enrichAssets(networkResources, domData?.imageContext || []);
@@ -73,6 +70,30 @@ async function scanCurrentTab() {
     renderColors(domData.colors);
     renderFonts(domData.fontInfo);
     renderMeta(domData.pageMeta);
+  }
+}
+
+// ─── Content script communication (with auto-inject fallback) ────────
+async function queryContentScript(tabId) {
+  // Try messaging the existing content script first
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { action: "analyzeDOM" });
+    if (response) return response;
+  } catch { /* content script not available */ }
+
+  // Content script not injected — inject it and retry
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+    // Brief delay for script to initialize and set up listeners
+    await new Promise((r) => setTimeout(r, 300));
+    const response = await chrome.tabs.sendMessage(tabId, { action: "analyzeDOM" });
+    return response || null;
+  } catch (err) {
+    console.warn("Content script injection failed:", err);
+    return null;
   }
 }
 
@@ -319,10 +340,10 @@ function createPlaceholder(icon) {
 function initTabNav() {
   const tabNav = document.getElementById("tabNav");
   tabNav.addEventListener("click", (e) => {
-    const btn = e.target.closest(".tab-btn");
-    if (!btn) return;
+    const btn = e.target.closest(".filter-chip");
+    if (!btn || btn.classList.contains("scan-chip")) return;
 
-    tabNav.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+    tabNav.querySelectorAll(".filter-chip:not(.scan-chip)").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
 
     currentTab = btn.dataset.tab;
@@ -333,11 +354,11 @@ function initTabNav() {
     if (currentTab === "colors") {
       grid.style.display = "none";
       colorsPanel.style.display = "block";
-      document.querySelector(".controls-bar").style.display = "none";
+      document.getElementById("controlsBar").style.display = "none";
     } else {
       grid.style.display = "grid";
       colorsPanel.style.display = "none";
-      document.querySelector(".controls-bar").style.display = "flex";
+      document.getElementById("controlsBar").style.display = "flex";
       renderGrid();
     }
   });

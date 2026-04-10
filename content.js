@@ -5,6 +5,12 @@
 //   - Font information (font-family declarations, Google Fonts links)
 //   - Page metadata (OG tags, theme color, site name)
 
+// Guard against duplicate injection (extension reload + programmatic inject)
+if (window.__NAS_CONTENT_LOADED__) {
+  // Already loaded — skip re-registration
+} else {
+  window.__NAS_CONTENT_LOADED__ = true;
+
 // ─── Color Utilities ─────────────────────────────────────────────────
 
 function rgbToHex(rgb) {
@@ -463,3 +469,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async
   }
 });
+
+} // end duplicate injection guard
