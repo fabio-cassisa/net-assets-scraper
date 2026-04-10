@@ -34,6 +34,9 @@ const TINY_DIMENSION = 48;       // ≤48px on both axes = likely icon/bullet
 const UI_URL_PATTERNS = /favicon|icon[_\-./]|badge[_\-./]|arrow[_\-./]|chevron|sprite|pixel|tracking|spacer|blank\.|1x1|transparent\.|loader|spinner|bullet|check[-_.]?mark|close[-_.]?btn|hamburger|caret/i;
 const UI_CDN_PATTERNS = /fontawesome|icomoon|material.*icon|googleapis.*icon|use\.typekit/i;
 
+// Patterns that indicate DASH/HLS streaming fragments (not playable standalone)
+const VIDEO_FRAGMENT_PATTERNS = /\.m4s(?:\?|$)|\.ts(?:\?|$)|\/segment|\/chunk\/|\/range\/|sq=\d|bytestart=|byteend=|\/frag\(|\.dash|init\.mp4/i;
+
 // ─── Platform Detection ──────────────────────────────────────────────
 const PLATFORM_PATTERNS = {
   instagram: /instagram\.com/,
@@ -201,13 +204,18 @@ function enrichAssets(networkResources, imageContext, platformResult) {
 
   // On social platforms, filter out ALL video from webRequest.
   // Instagram/TikTok/etc deliver video via DASH/MSE — webRequest only captures
-  // moof+mdat fragments (unplayable without init segment). The MSE interceptor
-  // captures and reassembles complete videos instead.
+  // moof+mdat fragments (unplayable without init segment). The fetch interceptor
+  // captures complete video CDN URLs from API responses instead.
   const isStreamingPlatform = platformResult?.platform && ["instagram", "tiktok"].includes(platformResult.platform);
 
-  const filtered = isStreamingPlatform
-    ? networkResources.filter((r) => r.type !== "video")
-    : networkResources;
+  // Filter out known DASH/HLS fragment URLs from ANY website
+  const filtered = networkResources.filter((r) => {
+    // On streaming platforms, drop all webRequest video
+    if (isStreamingPlatform && r.type === "video") return false;
+    // On all sites, drop URLs that match fragment patterns
+    if (r.type === "video" && VIDEO_FRAGMENT_PATTERNS.test(r.url)) return false;
+    return true;
+  });
 
   const enriched = filtered.map((res) => {
     const ctx = contextMap.get(res.url);
@@ -992,6 +1000,18 @@ async function downloadKit() {
         // Sniff actual content type from blob if available
         const actualType = blob.type || asset.contentType;
         const ext = getActualExtension(asset, actualType);
+
+        // Validate video files — skip DASH/HLS fragments that aren't playable
+        if (asset.type === "video" && !asset.isMSECapture) {
+          const isPlayable = await isPlayableVideo(blob);
+          if (!isPlayable) {
+            console.warn(`Skipping unplayable video fragment: ${asset.displayName}`);
+            completed++;
+            updateProgress();
+            return;
+          }
+        }
+
         let fileName = buildFinalFilename(asset, ext);
 
         // Pick the right folder
@@ -1116,6 +1136,35 @@ function formatBytes(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+/**
+ * Check if a video blob is a complete, playable file (not a DASH/HLS fragment).
+ * Reads the first 8 bytes and checks for MP4 box types:
+ *   ftyp (0x66747970) = complete MP4 → playable ✓
+ *   moov (0x6D6F6F76) = metadata box → playable ✓
+ *   moof (0x6D6F6F66) = movie fragment → NOT playable ✗
+ *   styp (0x73747970) = segment type → NOT playable ✗
+ */
+async function isPlayableVideo(blob) {
+  if (blob.size < 8) return false;
+  try {
+    const header = await blob.slice(0, 8).arrayBuffer();
+    const view = new DataView(header);
+    // MP4 box type is at bytes 4-7 (first 4 bytes are box size)
+    const boxType = view.getUint32(4);
+    const FTYP = 0x66747970; // complete file
+    const MOOV = 0x6D6F6F76; // metadata (some tools put moov first)
+    const MOOF = 0x6D6F6F66; // fragment
+    const STYP = 0x73747970; // segment type
+    // Accept ftyp and moov (playable), reject moof and styp (fragments)
+    if (boxType === FTYP || boxType === MOOV) return true;
+    if (boxType === MOOF || boxType === STYP) return false;
+    // Unknown box type — let it through (could be webm, ogg, etc.)
+    return true;
+  } catch {
+    return true; // On error, don't block — let the user decide
+  }
 }
 
 function showToast(message) {

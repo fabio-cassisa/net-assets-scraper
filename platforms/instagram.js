@@ -25,6 +25,27 @@ const IG_CDN_PATTERN = /scontent[.-]|cdninstagram\.com|fbcdn\.net/;
 // The video interceptor runs in MAIN world (page context).
 // Content script (ISOLATED world) communicates via window.postMessage.
 
+// Primary: fetch-intercepted video URLs (complete CDN MP4s from API responses)
+function requestFetchVideoUrls() {
+  return new Promise((resolve) => {
+    const handler = (event) => {
+      if (event.data?.source === "nas-mse" && event.data?.type === "video-url-list") {
+        window.removeEventListener("message", handler);
+        resolve(event.data.videos || []);
+      }
+    };
+    window.addEventListener("message", handler);
+    window.postMessage({ source: "nas-content", type: "get-video-urls" }, "*");
+
+    // Timeout after 500ms — interceptor might not be loaded
+    setTimeout(() => {
+      window.removeEventListener("message", handler);
+      resolve([]);
+    }, 500);
+  });
+}
+
+// Fallback: MSE-captured video segments (require reassembly)
 function requestMSEVideoList() {
   return new Promise((resolve) => {
     const handler = (event) => {
@@ -702,33 +723,53 @@ function analyzeInstagram() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "analyzePlatform") {
-    // Async: gather MSE captures alongside DOM analysis
+    // Async: gather intercepted video URLs alongside DOM analysis
     (async () => {
       try {
         const result = analyzeInstagram();
 
-        // Check for MSE-captured videos
-        const mseVideos = await requestMSEVideoList();
-        if (mseVideos.length > 0) {
-          // Add captured videos as assets (these are complete, playable files)
-          for (const video of mseVideos) {
-            // Only include captures with meaningful data (>50KB = has actual content)
-            if (video.totalBytes < 50000) continue;
+        // Strategy 1: Fetch-intercepted video URLs (direct CDN links — preferred)
+        const fetchVideos = await requestFetchVideoUrls();
+        if (fetchVideos.length > 0) {
+          for (const video of fetchVideos) {
+            // Dedup against assets already found via DOM analysis
+            if (result.assets.some((a) => a.url === video.url)) continue;
             result.assets.push({
-              url: `nas-mse://${video.id}`,
+              url: video.url,
               type: "video",
-              context: "mse-capture",
+              context: "api-capture",
               isLogo: false,
               isUI: false,
               alt: "",
-              width: 0,
-              height: 0,
+              width: video.width || 0,
+              height: video.height || 0,
               platformTag: "instagram-video",
-              isMSECapture: true,
-              mseVideoId: video.id,
-              mseBytes: video.totalBytes,
-              mseSegments: video.segmentCount,
             });
+          }
+        }
+
+        // Strategy 2: MSE-captured video segments (fallback if fetch found nothing)
+        if (fetchVideos.length === 0) {
+          const mseVideos = await requestMSEVideoList();
+          if (mseVideos.length > 0) {
+            for (const video of mseVideos) {
+              if (video.totalBytes < 50000) continue;
+              result.assets.push({
+                url: `nas-mse://${video.id}`,
+                type: "video",
+                context: "mse-capture",
+                isLogo: false,
+                isUI: false,
+                alt: "",
+                width: 0,
+                height: 0,
+                platformTag: "instagram-video",
+                isMSECapture: true,
+                mseVideoId: video.id,
+                mseBytes: video.totalBytes,
+                mseSegments: video.segmentCount,
+              });
+            }
           }
         }
 
@@ -745,28 +786,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "deepScanPlatform") {
     deepScanInstagram()
       .then(async (result) => {
-        // Also gather MSE captures after deep scan
-        const mseVideos = await requestMSEVideoList();
-        if (mseVideos.length > 0) {
-          for (const video of mseVideos) {
-            if (video.totalBytes < 50000) continue;
+        // Strategy 1: Fetch-intercepted video URLs (preferred)
+        const fetchVideos = await requestFetchVideoUrls();
+        if (fetchVideos.length > 0) {
+          for (const video of fetchVideos) {
+            if (result.assets.some((a) => a.url === video.url)) continue;
             result.assets.push({
-              url: `nas-mse://${video.id}`,
+              url: video.url,
               type: "video",
-              context: "mse-capture",
+              context: "api-capture",
               isLogo: false,
               isUI: false,
               alt: "",
-              width: 0,
-              height: 0,
+              width: video.width || 0,
+              height: video.height || 0,
               platformTag: "instagram-video",
-              isMSECapture: true,
-              mseVideoId: video.id,
-              mseBytes: video.totalBytes,
-              mseSegments: video.segmentCount,
             });
           }
         }
+
+        // Strategy 2: MSE fallback
+        if (fetchVideos.length === 0) {
+          const mseVideos = await requestMSEVideoList();
+          if (mseVideos.length > 0) {
+            for (const video of mseVideos) {
+              if (video.totalBytes < 50000) continue;
+              result.assets.push({
+                url: `nas-mse://${video.id}`,
+                type: "video",
+                context: "mse-capture",
+                isLogo: false,
+                isUI: false,
+                alt: "",
+                width: 0,
+                height: 0,
+                platformTag: "instagram-video",
+                isMSECapture: true,
+                mseVideoId: video.id,
+                mseBytes: video.totalBytes,
+                mseSegments: video.segmentCount,
+              });
+            }
+          }
+        }
+
         sendResponse(result);
       })
       .catch((err) => {

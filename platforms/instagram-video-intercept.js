@@ -1,34 +1,162 @@
-// ─── Net Assets Scraper V2 — Instagram MSE Video Interceptor ─────────
-// Runs in MAIN world (page JS context) to intercept MediaSource API.
-// Captures video data as Instagram feeds it to the browser via DASH/MSE,
-// then exposes reassembled complete videos for the content script to read.
+// ─── Net Assets Scraper V2 — Instagram Video Interceptor ─────────────
+// Runs in MAIN world (page JS context) to capture Instagram video URLs.
 //
-// How Instagram video works:
-//   1. Creates MediaSource + SourceBuffer (with codec string)
-//   2. Fetches DASH segments via fetch/XHR
-//   3. Calls sourceBuffer.appendBuffer(data) for each segment
-//   4. First append = init segment (ftyp+moov), rest = media segments (moof+mdat)
+// Strategy (dual approach, ordered by reliability):
 //
-// We patch appendBuffer to intercept every chunk, then reassemble on demand.
+//   1. FETCH INTERCEPTION (primary) — patches window.fetch to inspect
+//      Instagram's GraphQL/API responses. These contain `video_url` and
+//      `video_versions` fields pointing to complete, downloadable CDN
+//      MP4 files. Works in ALL Chromium browsers, survives SPA navigation.
+//
+//   2. MSE INTERCEPTION (fallback) — patches SourceBuffer.appendBuffer
+//      to capture DASH segments as they're fed to MediaSource. Requires
+//      reassembly into a playable file. More fragile, browser-dependent.
+//
+// The content script (ISOLATED world) queries both via postMessage bridge.
 
 (function () {
   "use strict";
 
   // Guard against double injection
-  if (window.__NAS_MSE_INTERCEPTED__) return;
-  window.__NAS_MSE_INTERCEPTED__ = true;
+  if (window.__NAS_VIDEO_INTERCEPTED__) return;
+  window.__NAS_VIDEO_INTERCEPTED__ = true;
 
-  // Storage: videoId → { codec, buffers: [ArrayBuffer], totalBytes }
-  // videoId is derived from the SourceBuffer's parent MediaSource objectURL
-  const captures = new Map();
+  // ═══════════════════════════════════════════════════════════════════
+  // STRATEGY 1: Fetch Interception — capture video URLs from API data
+  // ═══════════════════════════════════════════════════════════════════
 
-  // Track MediaSource → objectURL mapping
+  // Storage: url → { url, width, height, timestamp }
+  const videoUrls = new Map();
+
+  // Instagram API endpoint patterns
+  const API_PATTERNS = [
+    /instagram\.com\/graphql\/query/,
+    /instagram\.com\/api\/graphql/,
+    /instagram\.com\/api\/v1\//,
+  ];
+
+  // Instagram video CDN pattern
+  const VIDEO_CDN_PATTERN = /scontent[.-]|cdninstagram\.com|fbcdn\.net/;
+
+  // ─── Patch window.fetch ────────────────────────────────────────────
+  const origFetch = window.fetch;
+  window.fetch = async function (...args) {
+    const response = await origFetch.apply(this, args);
+
+    try {
+      // Only inspect Instagram API responses
+      const url = typeof args[0] === "string" ? args[0] : args[0]?.url || "";
+      if (API_PATTERNS.some((p) => p.test(url))) {
+        // Clone so the original response stream isn't consumed
+        const clone = response.clone();
+        // Parse async — don't block the caller
+        extractVideoUrlsFromResponse(clone).catch(() => {});
+      }
+    } catch {
+      // Never break Instagram's normal operation
+    }
+
+    return response;
+  };
+
+  // ─── Patch XMLHttpRequest for older API calls ──────────────────────
+  const origXhrOpen = XMLHttpRequest.prototype.open;
+  const origXhrSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    this._nasUrl = url;
+    return origXhrOpen.call(this, method, url, ...rest);
+  };
+
+  XMLHttpRequest.prototype.send = function (...args) {
+    if (this._nasUrl && API_PATTERNS.some((p) => p.test(this._nasUrl))) {
+      this.addEventListener("load", function () {
+        try {
+          if (this.responseType === "" || this.responseType === "text") {
+            const data = JSON.parse(this.responseText);
+            walkForVideoUrls(data, 0);
+          }
+        } catch {
+          // Silent — don't break XHR
+        }
+      });
+    }
+    return origXhrSend.apply(this, args);
+  };
+
+  // ─── Extract video URLs from a fetch response ──────────────────────
+  async function extractVideoUrlsFromResponse(response) {
+    const contentType = response.headers?.get("content-type") || "";
+    if (!contentType.includes("json") && !contentType.includes("text")) return;
+
+    const text = await response.text();
+    // Quick check before expensive parse
+    if (!text.includes("video")) return;
+
+    try {
+      const data = JSON.parse(text);
+      walkForVideoUrls(data, 0);
+    } catch {
+      // Not valid JSON — skip
+    }
+  }
+
+  // ─── Recursively walk JSON for video URL fields ────────────────────
+  const MAX_DEPTH = 20;
+
+  function walkForVideoUrls(obj, depth) {
+    if (!obj || depth > MAX_DEPTH) return;
+    if (typeof obj !== "object") return;
+
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        walkForVideoUrls(item, depth + 1);
+      }
+      return;
+    }
+
+    // Check for video_versions array (highest quality variant)
+    if (Array.isArray(obj.video_versions) && obj.video_versions.length > 0) {
+      // Sort by width descending → pick highest quality
+      const sorted = [...obj.video_versions].sort((a, b) => (b.width || 0) - (a.width || 0));
+      const best = sorted[0];
+      if (best?.url && VIDEO_CDN_PATTERN.test(best.url)) {
+        addVideoUrl(best.url, best.width || 0, best.height || 0);
+      }
+    }
+
+    // Check for direct video_url field
+    if (typeof obj.video_url === "string" && VIDEO_CDN_PATTERN.test(obj.video_url)) {
+      addVideoUrl(obj.video_url, obj.video_width || obj.original_width || 0, obj.video_height || obj.original_height || 0);
+    }
+
+    // Recurse into all values
+    for (const key of Object.keys(obj)) {
+      if (key === "video_versions" || key === "video_url") continue; // already handled
+      walkForVideoUrls(obj[key], depth + 1);
+    }
+  }
+
+  function addVideoUrl(url, width, height) {
+    if (videoUrls.has(url)) return;
+    videoUrls.set(url, {
+      url,
+      width: width || 0,
+      height: height || 0,
+      timestamp: Date.now(),
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // STRATEGY 2: MSE Interception — capture DASH segments (fallback)
+  // ═══════════════════════════════════════════════════════════════════
+
+  // Storage: videoId → { codec, buffers: [Uint8Array], totalBytes }
+  const mseCaptures = new Map();
   const msToUrl = new WeakMap();
-
-  // Counter for unique video IDs when objectURL isn't available
   let videoCounter = 0;
 
-  // ─── Patch URL.createObjectURL to track MediaSource URLs ───────────
+  // ─── Patch URL.createObjectURL ─────────────────────────────────────
   const origCreateObjectURL = URL.createObjectURL;
   URL.createObjectURL = function (obj) {
     const url = origCreateObjectURL.call(this, obj);
@@ -42,15 +170,13 @@
   const origAppendBuffer = SourceBuffer.prototype.appendBuffer;
   SourceBuffer.prototype.appendBuffer = function (data) {
     try {
-      // Identify which video stream this buffer belongs to
-      const ms = this._mediaSource || findMediaSource(this);
+      const ms = this._mediaSource || null;
       const videoId = getVideoId(ms);
 
       if (videoId && data && data.byteLength > 0) {
-        if (!captures.has(videoId)) {
-          // Extract codec from the SourceBuffer's mime type
+        if (!mseCaptures.has(videoId)) {
           const codec = this.mimeType || this._mimeType || "video/mp4";
-          captures.set(videoId, {
+          mseCaptures.set(videoId, {
             codec,
             buffers: [],
             totalBytes: 0,
@@ -58,28 +184,25 @@
           });
         }
 
-        const capture = captures.get(videoId);
-        // Store a TRUE COPY of the buffer — the original may be reused or
-        // detached after appendBuffer returns. new Uint8Array(view) copies;
-        // new Uint8Array(arrayBuffer) only creates a view (not safe).
+        const capture = mseCaptures.get(videoId);
+        // True copy — original buffer may be reused/detached
         const raw = data instanceof ArrayBuffer
           ? new Uint8Array(data)
           : data.buffer
             ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
             : new Uint8Array(data);
-        const copy = new Uint8Array(raw); // copy constructor = true clone
+        const copy = new Uint8Array(raw);
         capture.buffers.push(copy);
         capture.totalBytes += copy.byteLength;
       }
-    } catch (e) {
-      // Never break video playback — silently ignore capture errors
+    } catch {
+      // Never break video playback
     }
 
-    // Always call the original
     return origAppendBuffer.call(this, data);
   };
 
-  // ─── Patch MediaSource.addSourceBuffer to track parentage ──────────
+  // ─── Patch MediaSource.addSourceBuffer ─────────────────────────────
   const origAddSourceBuffer = MediaSource.prototype.addSourceBuffer;
   MediaSource.prototype.addSourceBuffer = function (mimeType) {
     const sb = origAddSourceBuffer.call(this, mimeType);
@@ -88,37 +211,25 @@
     return sb;
   };
 
-  // ─── Helpers ───────────────────────────────────────────────────────
-
-  function findMediaSource(sourceBuffer) {
-    // Fallback: try to find the MediaSource that owns this SourceBuffer
-    // by checking active MediaSources (limited, but best we can do)
-    return sourceBuffer._mediaSource || null;
-  }
-
   function getVideoId(mediaSource) {
     if (!mediaSource) return `nas-video-${++videoCounter}`;
     const url = msToUrl.get(mediaSource);
     if (url) return url;
-    // Assign a stable ID to this MediaSource
     if (!mediaSource.__nasId) {
       mediaSource.__nasId = `nas-video-${++videoCounter}`;
     }
     return mediaSource.__nasId;
   }
 
-  // ─── Public API for content script ─────────────────────────────────
-  // Content script reads this via window.postMessage or direct access
-  // (MAIN world script shares the page's window object)
+  // ═══════════════════════════════════════════════════════════════════
+  // PUBLIC API — exposed for content script via postMessage bridge
+  // ═══════════════════════════════════════════════════════════════════
 
   window.__NAS_VIDEO_CAPTURES__ = {
-    /**
-     * Get list of captured video streams with metadata
-     * @returns {Array<{id, codec, totalBytes, segmentCount, timestamp}>}
-     */
+    // MSE captures
     list() {
       const result = [];
-      for (const [id, capture] of captures) {
+      for (const [id, capture] of mseCaptures) {
         result.push({
           id,
           codec: capture.codec,
@@ -127,35 +238,19 @@
           timestamp: capture.timestamp,
         });
       }
-      // Sort by timestamp (newest first)
       result.sort((a, b) => b.timestamp - a.timestamp);
       return result;
     },
 
-    /**
-     * Reassemble a captured video into a complete Blob
-     * @param {string} id - Video ID from list()
-     * @returns {Blob|null} Complete MP4 blob, or null if not found
-     */
     reassemble(id) {
-      const capture = captures.get(id);
+      const capture = mseCaptures.get(id);
       if (!capture || capture.buffers.length === 0) return null;
-
-      // Concatenate all buffers: init segment + media segments
-      // They're already in correct order (appendBuffer is called sequentially)
-      const blob = new Blob(capture.buffers, { type: "video/mp4" });
-      return blob;
+      return new Blob(capture.buffers, { type: "video/mp4" });
     },
 
-    /**
-     * Reassemble and return as a data URL (for messaging to content script)
-     * @param {string} id - Video ID
-     * @returns {Promise<string|null>} Data URL or null
-     */
     async reassembleAsDataUrl(id) {
       const blob = this.reassemble(id);
       if (!blob) return null;
-
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onloadend = () => resolve(reader.result);
@@ -164,39 +259,39 @@
       });
     },
 
-    /**
-     * Get the total number of captured streams
-     */
-    get count() {
-      return captures.size;
-    },
+    get count() { return mseCaptures.size; },
+    clear() { mseCaptures.clear(); },
+    remove(id) { mseCaptures.delete(id); },
+  };
 
-    /**
-     * Clear all captures (free memory)
-     */
-    clear() {
-      captures.clear();
+  // Fetch-intercepted video URLs (primary strategy)
+  window.__NAS_VIDEO_URLS__ = {
+    list() {
+      return Array.from(videoUrls.values()).sort((a, b) => b.timestamp - a.timestamp);
     },
-
-    /**
-     * Clear a specific capture
-     */
-    remove(id) {
-      captures.delete(id);
-    },
+    get count() { return videoUrls.size; },
+    clear() { videoUrls.clear(); },
   };
 
   // ─── Cross-world message bridge ────────────────────────────────────
-  // Content script (ISOLATED world) talks to us via window.postMessage
   window.addEventListener("message", async (event) => {
     if (event.data?.source !== "nas-content") return;
 
+    // Fetch-intercepted URLs (primary)
+    if (event.data.type === "get-video-urls") {
+      window.postMessage({
+        source: "nas-mse",
+        type: "video-url-list",
+        videos: window.__NAS_VIDEO_URLS__.list(),
+      }, "*");
+    }
+
+    // MSE captures (fallback)
     if (event.data.type === "get-video-list") {
-      const videos = window.__NAS_VIDEO_CAPTURES__.list();
       window.postMessage({
         source: "nas-mse",
         type: "video-list",
-        videos,
+        videos: window.__NAS_VIDEO_CAPTURES__.list(),
       }, "*");
     }
 
@@ -211,5 +306,5 @@
     }
   });
 
-  console.log("[NAS] MSE video interceptor active");
+  console.log("[NAS] Video interceptor active (fetch + MSE)");
 })();
