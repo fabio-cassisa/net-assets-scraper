@@ -670,62 +670,68 @@ function initControls() {
     domData = null;
     selectedUrls.clear();
     renderGrid();
+    renderBadges();
     updateDownloadBar();
 
     // Deep scan: auto-scrolls the page to trigger lazy loaders
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && !isRestrictedTab(tab)) {
-      // Detect platform for this scan
-      detectedPlatform = detectPlatform(tab.url);
-      renderPlatformBadge();
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab && !isRestrictedTab(tab)) {
+        // Detect platform for this scan
+        detectedPlatform = detectPlatform(tab.url);
+        renderPlatformBadge();
 
-      // If on a known platform, use platform-specific deep scan
-      if (detectedPlatform && PLATFORM_SCRIPTS[detectedPlatform]) {
-        try {
-          platformData = await chrome.tabs.sendMessage(tab.id, { action: "deepScanPlatform" });
-        } catch {
+        // If on a known platform, use platform-specific deep scan
+        if (detectedPlatform && PLATFORM_SCRIPTS[detectedPlatform]) {
           try {
-            await chrome.scripting.executeScript({
-              target: { tabId: tab.id },
-              files: [PLATFORM_SCRIPTS[detectedPlatform]],
-            });
-            await new Promise((r) => setTimeout(r, 300));
             platformData = await chrome.tabs.sendMessage(tab.id, { action: "deepScanPlatform" });
           } catch {
-            platformData = null;
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                files: [PLATFORM_SCRIPTS[detectedPlatform]],
+              });
+              await new Promise((r) => setTimeout(r, 300));
+              platformData = await chrome.tabs.sendMessage(tab.id, { action: "deepScanPlatform" });
+            } catch {
+              platformData = null;
+            }
           }
         }
-      }
 
-      try {
-        // If platform already deep-scanned (scrolled), just analyze DOM without re-scrolling
-        const domAction = platformData ? "analyzeDOM" : "deepScan";
-        domData = await chrome.tabs.sendMessage(tab.id, { action: domAction });
-      } catch {
-        // Fallback: inject + scan
         try {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: ["content.js"],
-          });
-          await new Promise((r) => setTimeout(r, 300));
+          // If platform already deep-scanned (scrolled), just analyze DOM without re-scrolling
           const domAction = platformData ? "analyzeDOM" : "deepScan";
           domData = await chrome.tabs.sendMessage(tab.id, { action: domAction });
         } catch {
-          domData = null;
+          // Fallback: inject + scan
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              files: ["content.js"],
+            });
+            await new Promise((r) => setTimeout(r, 300));
+            const domAction = platformData ? "analyzeDOM" : "deepScan";
+            domData = await chrome.tabs.sendMessage(tab.id, { action: domAction });
+          } catch {
+            domData = null;
+          }
         }
+
+        // Also grab network resources
+        const bgResponse = await chrome.runtime.sendMessage({
+          action: "getResources",
+          tabId: tab.id,
+        });
+        const networkResources = bgResponse?.resources || [];
+
+        allAssets = enrichAssets(networkResources, domData?.imageContext || [], platformData);
       }
-
-      // Also grab network resources
-      const bgResponse = await chrome.runtime.sendMessage({
-        action: "getResources",
-        tabId: tab.id,
-      });
-      const networkResources = bgResponse?.resources || [];
-
-      allAssets = enrichAssets(networkResources, domData?.imageContext || [], platformData);
+    } catch (err) {
+      console.error("NAS deep scan error:", err);
     }
 
+    // Always render results — even partial data is better than stale UI
     renderGrid();
     renderBadges();
     if (domData) {
@@ -770,10 +776,23 @@ function updateDownloadBar() {
 // ─── Render Badges ───────────────────────────────────────────────────
 function renderBadges() {
   const counts = { image: 0, video: 0, font: 0 };
-  // Reuse the same filtering logic as the grid
-  const visible = getFilteredAssets();
-
-  for (const asset of visible) {
+  // Count ALL assets (with hide-small/hide-UI filters but NOT tab filter)
+  // so badges always reflect totals regardless of which tab is active
+  for (const asset of allAssets) {
+    // Apply same hide-small / hide-UI logic as getFilteredAssets
+    if (hideSmall) {
+      if (asset.contentLength > 0 && asset.contentLength < SIZE_THRESHOLD) continue;
+      const w = asset.domWidth || 0;
+      const h = asset.domHeight || 0;
+      if (w > 0 && h > 0 && w <= TINY_DIMENSION && h <= TINY_DIMENSION) continue;
+    }
+    if (hideUI) {
+      if (asset.isUI) continue;
+      if (asset.url && (UI_URL_PATTERNS.test(asset.url) || UI_CDN_PATTERNS.test(asset.url))) continue;
+      const w = asset.domWidth || 0;
+      const h = asset.domHeight || 0;
+      if (w > 0 && h > 0 && w <= 24 && h <= 24) continue;
+    }
     if (counts[asset.type] !== undefined) counts[asset.type]++;
   }
 
