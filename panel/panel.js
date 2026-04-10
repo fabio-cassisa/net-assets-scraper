@@ -199,7 +199,18 @@ function enrichAssets(networkResources, imageContext, platformResult) {
     contextMap.set(img.url, img);
   }
 
-  const enriched = networkResources.map((res) => {
+  // On social platforms, filter out fragmented video segments from webRequest.
+  // Instagram/TikTok/etc deliver video via DASH/MSE — webRequest captures small
+  // moof+mdat fragments (20-500KB) instead of complete files (1MB+).
+  // The platform script extracts the real video URLs from meta tags instead.
+  const isStreamingPlatform = platformResult?.platform && ["instagram", "tiktok"].includes(platformResult.platform);
+  const VIDEO_FRAGMENT_THRESHOLD = 500 * 1024; // 500KB
+
+  const filtered = isStreamingPlatform
+    ? networkResources.filter((r) => !(r.type === "video" && r.contentLength > 0 && r.contentLength < VIDEO_FRAGMENT_THRESHOLD))
+    : networkResources;
+
+  const enriched = filtered.map((res) => {
     const ctx = contextMap.get(res.url);
     return {
       ...res,
@@ -216,7 +227,7 @@ function enrichAssets(networkResources, imageContext, platformResult) {
   });
 
   // Also add DOM-discovered images not in network resources
-  const allUrls = new Set(networkResources.map((r) => r.url));
+  const allUrls = new Set(filtered.map((r) => r.url));
   for (const img of imageContext) {
     if (!allUrls.has(img.url)) {
       const ext = getExtFromUrl(img.url);

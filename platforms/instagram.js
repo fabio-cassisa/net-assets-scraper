@@ -205,10 +205,29 @@ function extractPostData() {
   }
 
   // Videos in the post
+  // First: try to get complete video URLs from meta tags (not fragments)
+  const metaVideoUrls = extractVideoUrlsFromMeta();
+  for (const url of metaVideoUrls) {
+    if (!seen.has(url)) {
+      seen.add(url);
+      data.videos.push({
+        url,
+        poster: null,
+        type: "post-video",
+        width: 0,
+        height: 0,
+      });
+    }
+  }
+
+  // Fallback: check <video> elements for direct CDN src (skip blob: URLs)
   const videos = container.querySelectorAll("video");
   for (const video of videos) {
     const src = video.src || video.querySelector("source")?.src;
     if (!src || seen.has(src)) continue;
+    // Skip blob: URLs — they point to MSE assembled streams, not downloadable files
+    if (src.startsWith("blob:")) continue;
+    if (!IG_CDN_PATTERN.test(src)) continue;
     seen.add(src);
 
     data.videos.push({
@@ -218,6 +237,20 @@ function extractPostData() {
       width: video.videoWidth || video.width || 0,
       height: video.videoHeight || video.height || 0,
     });
+  }
+
+  // Grab poster frames from video elements as image assets
+  for (const video of videos) {
+    if (video.poster && !seen.has(video.poster) && isInstagramCdnUrl(video.poster)) {
+      seen.add(video.poster);
+      data.images.push({
+        url: video.poster,
+        alt: "",
+        width: 0,
+        height: 0,
+        type: "video-poster",
+      });
+    }
   }
 
   // Carousel detection — look for next/prev buttons indicating multiple slides
@@ -265,11 +298,29 @@ function extractReelData() {
 
   const seen = new Set();
 
-  // Reels page — look for <video> elements
+  // First: try to get complete video URLs from meta tags (not fragments)
+  const metaVideoUrls = extractVideoUrlsFromMeta();
+  for (const url of metaVideoUrls) {
+    if (!seen.has(url)) {
+      seen.add(url);
+      data.videos.push({
+        url,
+        poster: null,
+        type: "reel",
+        width: 0,
+        height: 0,
+      });
+    }
+  }
+
+  // Fallback: check <video> elements for direct CDN src (skip blob: URLs)
   const videos = document.querySelectorAll("video");
   for (const video of videos) {
     const src = video.src || video.querySelector("source")?.src;
     if (!src || seen.has(src)) continue;
+    // Skip blob: URLs — they point to MSE assembled streams, not downloadable files
+    if (src.startsWith("blob:")) continue;
+    if (!IG_CDN_PATTERN.test(src)) continue;
     seen.add(src);
 
     data.videos.push({
@@ -279,28 +330,13 @@ function extractReelData() {
       width: video.videoWidth || video.width || 0,
       height: video.videoHeight || video.height || 0,
     });
+  }
 
-    // Grab poster as a separate image asset
+  // Grab poster frames from video elements
+  for (const video of videos) {
     if (video.poster && !seen.has(video.poster)) {
       seen.add(video.poster);
       data.poster = video.poster;
-    }
-  }
-
-  // Also check for blob: URLs — Instagram often uses blob: for video playback
-  // We'll flag these so the panel knows to proxy through fetchBlob
-  const blobVideos = document.querySelectorAll('video[src^="blob:"]');
-  for (const video of blobVideos) {
-    if (!seen.has(video.src)) {
-      seen.add(video.src);
-      data.videos.push({
-        url: video.src,
-        poster: video.poster || null,
-        type: "reel",
-        isBlob: true,
-        width: video.videoWidth || video.width || 0,
-        height: video.videoHeight || video.height || 0,
-      });
     }
   }
 
@@ -340,16 +376,36 @@ function extractStoriesData() {
   }
 
   const videos = document.querySelectorAll("video");
+
+  // First: try meta tags for complete video URLs
+  const metaVideoUrls = extractVideoUrlsFromMeta();
+  for (const url of metaVideoUrls) {
+    if (!seen.has(url)) {
+      seen.add(url);
+      data.videos.push({
+        url,
+        poster: null,
+        type: "story-video",
+        isBlob: false,
+        width: 0,
+        height: 0,
+      });
+    }
+  }
+
+  // Fallback: <video> elements with direct CDN src (skip blob: URLs)
   for (const video of videos) {
     const src = video.src || video.querySelector("source")?.src;
     if (!src || seen.has(src)) continue;
+    if (src.startsWith("blob:")) continue;
+    if (!IG_CDN_PATTERN.test(src)) continue;
     seen.add(src);
 
     data.videos.push({
       url: src,
       poster: video.poster || null,
       type: "story-video",
-      isBlob: src.startsWith("blob:"),
+      isBlob: false,
       width: video.videoWidth || video.width || 0,
       height: video.videoHeight || video.height || 0,
     });
@@ -396,6 +452,46 @@ function isInstagramCdnUrl(url) {
   if (!url) return false;
   // Accept Instagram CDN URLs and any https image URLs on the page
   return IG_CDN_PATTERN.test(url) && !url.includes("static.cdninstagram.com/rsrc");
+}
+
+// ─── Video URL Extraction from Meta / JSON-LD ────────────────────────
+// Instagram serves video via MSE (blob: URLs + fragmented segments).
+// Complete video files are only available from og:video meta tags and
+// JSON-LD structured data embedded in the page HTML.
+
+function extractVideoUrlsFromMeta() {
+  const urls = [];
+  const seen = new Set();
+
+  // 1. og:video and og:video:url meta tags
+  const metaTags = document.querySelectorAll(
+    'meta[property="og:video"], meta[property="og:video:url"], meta[property="og:video:secure_url"]'
+  );
+  for (const tag of metaTags) {
+    const url = tag.getAttribute("content");
+    if (url && !seen.has(url) && IG_CDN_PATTERN.test(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+
+  // 2. JSON-LD structured data (VideoObject)
+  const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+  for (const script of scripts) {
+    try {
+      const data = JSON.parse(script.textContent);
+      const items = Array.isArray(data) ? data : [data];
+      for (const item of items) {
+        const videoUrl = item.contentUrl || item.embedUrl || item.url;
+        if (videoUrl && !seen.has(videoUrl) && IG_CDN_PATTERN.test(videoUrl)) {
+          seen.add(videoUrl);
+          urls.push(videoUrl);
+        }
+      }
+    } catch { /* skip malformed JSON-LD */ }
+  }
+
+  return urls;
 }
 
 // ─── Main Analyzer ───────────────────────────────────────────────────
