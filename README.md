@@ -1,68 +1,114 @@
-# chrome assets scraper
+# net assets scraper
 
-browser extension that captures and downloads assets from any website you visit.
+browser extension that extracts brand assets from any website — logos, images, videos, fonts, and colors — into an organized brand kit.
 
 ## context
 
-born from a real need — when building ad creatives, you constantly grab images, fonts, videos, and other assets from client websites for reference. instead of digging through devtools and network tabs manually, this extension captures network requests and lets you download assets directly.
+built for a creative development team that makes ad creatives all day. the workflow: visit a client's website, grab their brand assets (logos, product shots, brand colors, fonts), drop them into a template builder, ship a mockup. before this tool, that meant digging through devtools, right-clicking images one by one, eyedropping colors manually.
 
-a developer tool for creative developers who need assets fast.
+this extension sits in the background, passively captures every image/video/font the browser loads, analyzes the page for brand colors and font stacks, and lets you download everything as an organized zip with one click.
 
-> ⚠️ alpha version — personal/educational use, not commercial distribution.
+non-technical people use this — sales, account managers. it needs to be dead simple.
 
-## stack
+> v1 captured network requests and listed them. v2 is a complete rewrite — smart extraction, DOM analysis, brand color detection, organized output.
 
-`javascript` · `chrome extension (manifest v3)` · `html` · `css`
+## what it does
+
+- **passive capture** — `webRequest` API monitors every image, video, font, and audio file the browser loads. no button to press, it just watches.
+- **smart brand colors** — extracts colors from CSS custom properties first (most reliable), then meta tags (`theme-color`), then weighted DOM frequency analysis with noise filtering. skips near-black/white/grey.
+- **logo detection** — flags images as logos based on alt text, class names, IDs, file paths, and DOM position (header/nav zones).
+- **UI element filtering** — identifies and hides nav icons, social icons, button arrows, favicons, and other UI chrome. uses size heuristics (≤48px), DOM context (inside `<button>`, `<nav>`), class/id pattern matching, and known icon CDN domains.
+- **deep scan** — auto-scrolls the entire page to trigger lazy-loaded images (IntersectionObserver, `data-src`, `data-lazy-src`, etc.), then runs full DOM analysis.
+- **font detection** — finds Google Fonts links, Adobe Fonts/TypeKit, `@font-face` declarations, and computed font families from key elements.
+- **preview grid** — visual grid with real thumbnails, video frame grabs, and live font glyph rendering. type badges, logo badges, file sizes, dimensions.
+- **organized download** — selected assets go into a zip: `logos/`, `images/`, `videos/`, `fonts/` + a `brand.json` with all extracted colors, fonts, and page metadata.
 
 ## how it works
 
-1. install the extension locally (see below)
-2. navigate to any website
-3. click the extension icon — network requests get captured
-4. browse captured assets and download what you need
+1. install locally (see below)
+2. browse to any website — assets are captured automatically
+3. click the extension icon to open the panel
+4. filter by type, toggle "hide tiny" / "hide UI" to cut noise
+5. hit **scan** for a deep scan (auto-scrolls the page, finds lazy-loaded content)
+6. select what you need, hit **download kit**
+7. get a zip with organized folders + `brand.json`
+
+## stack
+
+`javascript` · `chrome extension (manifest v3)` · `html` · `css` · `jszip`
+
+no build step, no bundler, no framework. vanilla JS. coworkers install by dragging a folder into chrome.
 
 ## structure
 
 ```
-├── background.js    # service worker — captures network requests
-├── content.js       # content script — injected into pages
-├── popup.html       # extension popup ui
-├── popup.js         # popup logic and interaction
-├── style.css        # popup styling
-├── manifest.json    # chrome extension manifest v3
-├── libs/            # third-party libraries
-└── assets/          # extension icons
+├── manifest.json        # manifest v3 — permissions, content scripts
+├── background.js        # service worker — webRequest passive capture
+├── content.js           # content script — DOM analysis, color/font/image extraction, deep scan
+├── panel/
+│   ├── panel.html       # popup UI
+│   ├── panel.css        # cyberpunk dark theme
+│   └── panel.js         # panel logic — grid, filters, zip generation
+├── lib/
+│   └── jszip.min.js     # zip library
+└── assets/
+    └── icons/           # extension icons (16–128px)
 ```
 
-## install locally
+## install
 
 ```
-1. clone this repo
-2. open chrome://extensions
-3. enable "developer mode"
+1. clone or download this repo
+2. open chrome://extensions (or brave://extensions, edge://extensions)
+3. enable "developer mode" (top right toggle)
 4. click "load unpacked" → select this folder
-5. navigate to any site and click the extension icon
+5. browse to any site and click the extension icon
 ```
+
+works on chrome, brave, edge, arc, and other chromium browsers.
 
 ## permissions
 
-- `tabs` — access the current tab
-- `downloads` — save assets locally
-- `activeTab` + `scripting` — interact with page content
-- `clipboardWrite` — copy asset URLs
-- `host_permissions: <all_urls>` — capture requests from any site
+- `webRequest` — passively monitor network requests for assets
+- `tabs` + `activeTab` — access current tab URL and state
+- `scripting` — inject content script for DOM analysis
+- `downloads` — save the zip file
+- `storage` — persist settings
+- `clipboardWrite` — copy color hex codes
+- `host_permissions: <all_urls>` — capture from any site
 
 ## status
 
-🟡 alpha — functional but rough. planned:
-- [ ] better asset categorization (images, fonts, scripts, media)
-- [ ] filtering and search
-- [ ] bulk download
-- [ ] ui/ux overhaul
+🟢 **v2.0 — drop 1 shipped**. core rebuild complete.
+
+- [x] passive network capture via `webRequest`
+- [x] smart brand color extraction (CSS vars → meta → DOM frequency)
+- [x] logo detection + UI element filtering
+- [x] deep scan (auto-scroll for lazy-loaded content)
+- [x] preview grid with video frame grabs + font glyph rendering
+- [x] organized zip download with `brand.json`
+- [x] dark cyberpunk theme
+
+**planned:**
+
+🟡 drop 2 — social media mode
+- [ ] instagram, facebook, tiktok, youtube, twitter/x content scripts
+- [ ] platform auto-detection + platform-specific extraction
+- [ ] video downloading
+
+🟡 drop 3 — element capture + advanced
+- [ ] click-to-screenshot DOM elements as PNG
+- [ ] font file downloads (Google Fonts → `.woff2`)
+- [ ] batch mode (scan multiple pages)
+
+## versioning
+
+- `v2.0` — current. complete rewrite with smart extraction.
+- `v1.0` — original network capture version. still available via `git checkout v1.0`.
 
 ## why open source
 
-tools like this exist commercially. this one is lightweight and transparent — no tracking, no account, no cloud. just a local tool that does one thing.
+tools like this exist commercially. this one is lightweight, transparent, and offline — no tracking, no account, no cloud, no store listing. just a local tool that does one thing well.
 
 ---
 
