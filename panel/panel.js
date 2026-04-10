@@ -453,14 +453,61 @@ function initControls() {
     updateDownloadBar();
   });
 
-  document.getElementById("refreshBtn").addEventListener("click", () => {
+  document.getElementById("refreshBtn").addEventListener("click", async () => {
+    const btn = document.getElementById("refreshBtn");
+    const btnText = btn.querySelector("span");
+    const originalText = btnText.textContent;
+
+    // Show scanning state
+    btn.disabled = true;
+    btnText.textContent = "Scanning…";
     allAssets = [];
     domData = null;
     selectedUrls.clear();
     renderGrid();
     updateDownloadBar();
-    scanCurrentTab();
-    showToast("Re-scanning page...");
+
+    // Deep scan: auto-scrolls the page to trigger lazy loaders
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && !isRestrictedTab(tab)) {
+      try {
+        // Try deep scan first (auto-scroll + analyze)
+        domData = await chrome.tabs.sendMessage(tab.id, { action: "deepScan" });
+      } catch {
+        // Fallback: inject + deep scan
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ["content.js"],
+          });
+          await new Promise((r) => setTimeout(r, 300));
+          domData = await chrome.tabs.sendMessage(tab.id, { action: "deepScan" });
+        } catch {
+          domData = null;
+        }
+      }
+
+      // Also grab network resources
+      const bgResponse = await chrome.runtime.sendMessage({
+        action: "getResources",
+        tabId: tab.id,
+      });
+      const networkResources = bgResponse?.resources || [];
+
+      allAssets = enrichAssets(networkResources, domData?.imageContext || []);
+    }
+
+    renderGrid();
+    renderBadges();
+    if (domData) {
+      renderColors(domData.colors);
+      renderFonts(domData.fontInfo);
+      renderMeta(domData.pageMeta);
+    }
+
+    btn.disabled = false;
+    btnText.textContent = originalText;
+    showToast(`Deep scan complete — ${allAssets.length} assets found`);
   });
 }
 

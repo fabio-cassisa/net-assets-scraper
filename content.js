@@ -288,6 +288,19 @@ function extractImageContext() {
           if (u) urls.push(u);
         });
       }
+      // Lazy-load attributes (common patterns across libraries)
+      for (const attr of ["data-src", "data-lazy-src", "data-original", "data-lazy", "data-srcset", "data-hi-res-src"]) {
+        const val = el.getAttribute(attr);
+        if (!val) continue;
+        if (attr.includes("srcset")) {
+          val.split(",").forEach((s) => {
+            const u = s.trim().split(/\s+/)[0];
+            if (u) urls.push(u);
+          });
+        } else {
+          urls.push(val.startsWith("//") ? "https:" + val : val);
+        }
+      }
     } else if (tag === "source") {
       if (el.srcset) {
         el.srcset.split(",").forEach((s) => {
@@ -446,6 +459,44 @@ function getFaviconUrl() {
   return window.location.origin + "/favicon.ico";
 }
 
+// ─── Deep Scan — auto-scroll to trigger lazy loaders ─────────────────
+
+async function deepScan() {
+  const originalScroll = window.scrollY;
+  const viewportH = window.innerHeight;
+  const maxScroll = document.documentElement.scrollHeight;
+  const stepPx = Math.floor(viewportH * 0.8); // overlap slightly
+  const maxDuration = 12000; // cap at 12 seconds
+  const stepDelay = 250;     // ms between scroll steps
+
+  const startTime = Date.now();
+  let position = 0;
+
+  // Scroll down the page in steps
+  while (position < maxScroll && (Date.now() - startTime) < maxDuration) {
+    position += stepPx;
+    window.scrollTo({ top: position, behavior: "instant" });
+    await new Promise((r) => setTimeout(r, stepDelay));
+  }
+
+  // Brief pause at the bottom for final assets to trigger
+  await new Promise((r) => setTimeout(r, 500));
+
+  // Scroll back to original position
+  window.scrollTo({ top: originalScroll, behavior: "instant" });
+
+  // Small wait for any last paint/load events
+  await new Promise((r) => setTimeout(r, 300));
+
+  // Now run the full DOM analysis with everything loaded
+  return {
+    colors: extractAllColors(),
+    imageContext: extractImageContext(),
+    fontInfo: extractFontInfo(),
+    pageMeta: extractPageMeta(),
+  };
+}
+
 // ─── Message Handler ─────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -466,6 +517,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.error("NAS content script error:", err);
       sendResponse({ error: err.message });
     }
+    return true; // async
+  }
+
+  // Deep scan — auto-scroll page to trigger lazy loaders, then analyze
+  if (message.action === "deepScan") {
+    deepScan()
+      .then((result) => sendResponse(result))
+      .catch((err) => {
+        console.error("NAS deep scan error:", err);
+        sendResponse({ error: err.message });
+      });
     return true; // async
   }
 
