@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Net Assets Scraper</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <!-- Header -->
+  <header class="panel-header">
+    <div class="header-title">
+      <h1>NAS<span class="accent">.</span></h1>
+      <span class="version">v2</span>
+    </div>
+    <p class="site-name" id="siteName">—</p>
+  </header>
+
+  <!-- Tab Navigation -->
+  <nav class="tab-nav" id="tabNav">
+    <button class="tab-btn active" data-tab="all">All</button>
+    <button class="tab-btn" data-tab="image">Images <span class="badge" id="badgeImage">0</span></button>
+    <button class="tab-btn" data-tab="video">Videos <span class="badge" id="badgeVideo">0</span></button>
+    <button class="tab-btn" data-tab="font">Fonts <span class="badge" id="badgeFont">0</span></button>
+    <button class="tab-btn" data-tab="colors">Colors</button>
+  </nav>
+
+  <!-- Controls Bar -->
+  <div class="controls-bar">
+    <div class="controls-left">
+      <label class="filter-toggle">
+        <input type="checkbox" id="hideSmall" checked />
+        <span>Hide tiny (&lt;5KB)</span>
+      </label>
+      <button class="btn-ghost" id="selectAll">Select all</button>
+      <button class="btn-ghost" id="selectNone">None</button>
+    </div>
+    <div class="controls-right">
+      <button class="btn-ghost" id="refreshBtn" title="Re-scan page">↻ Scan</button>
+    </div>
+  </div>
+
+  <!-- Asset Grid -->
+  <main class="asset-grid" id="assetGrid">
+    <div class="empty-state" id="emptyState">
+      <p class="empty-icon">📡</p>
+      <p>Browse a page to capture assets.</p>
+      <p class="hint">The extension passively monitors network resources as you browse.</p>
+    </div>
+  </main>
+
+  <!-- Colors Panel (hidden by default, shown when Colors tab active) -->
+  <section class="colors-panel" id="colorsPanel" style="display: none;">
+    <div class="colors-section">
+      <h3>Brand Colors</h3>
+      <p class="hint" id="colorsHint">Extracted from CSS variables, meta tags, and page analysis.</p>
+      <div class="color-grid" id="colorGrid"></div>
+    </div>
+    <div class="colors-section">
+      <h3>Fonts Detected</h3>
+      <div class="font-list" id="fontList"></div>
+    </div>
+    <div class="colors-section">
+      <h3>Page Info</h3>
+      <div class="meta-info" id="metaInfo"></div>
+    </div>
+  </section>
+
+  <!-- Sticky Download Bar -->
+  <footer class="download-bar" id="downloadBar">
+    <div class="download-info">
+      <span id="selectedCount">0 selected</span>
+      <span class="download-size" id="selectedSize"></span>
+    </div>
+    <button class="btn-download" id="downloadBtn" disabled>
+      Download Kit ↓
+    </button>
+  </footer>
+
+  <!-- Toast notification -->
+  <div class="toast" id="toast"></div>
+
+  <script src="../lib/jszip.min.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>
