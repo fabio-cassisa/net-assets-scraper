@@ -612,12 +612,18 @@ function initDownload() {
 
 async function downloadKit() {
   const btn = document.getElementById("downloadBtn");
-  btn.disabled = true;
-  btn.textContent = "Packaging...";
+  const progressEl = document.getElementById("downloadProgress");
+  const progressFill = document.getElementById("progressFill");
+  const progressText = document.getElementById("progressText");
+
+  btn.style.display = "none";
+  progressEl.style.display = "flex";
+  progressFill.style.width = "0%";
 
   try {
     const zip = new JSZip();
     const selected = allAssets.filter((a) => selectedUrls.has(a.url));
+    const total = selected.length;
 
     // Create folder structure
     const folders = {
@@ -634,7 +640,17 @@ async function downloadKit() {
     const usedNames = new Map(); // folder → Set<name>
 
     let completed = 0;
-    const total = selected.length;
+    let totalBytes = 0;
+
+    // Update progress UI
+    function updateProgress() {
+      const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+      progressFill.style.width = `${pct}%`;
+      const sizeStr = totalBytes > 0 ? ` · ${formatBytes(totalBytes)}` : "";
+      progressText.textContent = `${completed} / ${total}${sizeStr}`;
+    }
+
+    updateProgress();
 
     // Download each selected asset
     const promises = selected.map(async (asset) => {
@@ -673,14 +689,21 @@ async function downloadKit() {
         nameSet.add(fileName);
 
         targetFolder.file(fileName, blob, { binary: true });
+        totalBytes += blob.size;
         completed++;
+        updateProgress();
       } catch (err) {
         console.error(`Failed to fetch ${asset.url}:`, err);
         completed++;
+        updateProgress();
       }
     });
 
     await Promise.all(promises);
+
+    // Zipping phase
+    progressText.textContent = `Zipping ${completed} files…`;
+    progressFill.style.width = "100%";
 
     // Add brand.json with colors, fonts, and meta
     if (domData) {
@@ -723,11 +746,13 @@ async function downloadKit() {
       URL.revokeObjectURL(blobUrl);
     });
 
-    showToast(`Kit downloaded — ${completed} files`);
+    showToast(`Kit downloaded — ${completed} files · ${formatBytes(totalBytes)}`);
   } catch (err) {
     console.error("Kit generation failed:", err);
     showToast("Download failed. Check console.");
   } finally {
+    progressEl.style.display = "none";
+    btn.style.display = "";
     btn.disabled = false;
     btn.textContent = "Download Kit ↓";
     updateDownloadBar();
