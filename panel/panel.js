@@ -306,11 +306,30 @@ function createAssetCard(asset) {
     img.onerror = () => {
       img.replaceWith(createPlaceholder("🖼"));
     };
+    // Detect images that load but are essentially empty (1×1 pixels, etc.)
+    img.onload = () => {
+      if (img.naturalWidth <= 2 && img.naturalHeight <= 2) {
+        img.replaceWith(createPlaceholder("·"));
+      }
+    };
     card.appendChild(img);
   } else if (asset.type === "video") {
-    card.appendChild(createPlaceholder("🎬"));
+    const video = document.createElement("video");
+    video.className = "card-thumb";
+    video.src = asset.url;
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+    // Seek slightly in to grab a real frame (some videos have blank first frames)
+    video.addEventListener("loadedmetadata", () => {
+      video.currentTime = Math.min(1, video.duration * 0.1);
+    });
+    video.onerror = () => {
+      video.replaceWith(createPlaceholder("🎬"));
+    };
+    card.appendChild(video);
   } else if (asset.type === "font") {
-    card.appendChild(createPlaceholder("Aa"));
+    card.appendChild(createFontPreview(asset));
   } else if (asset.type === "audio") {
     card.appendChild(createPlaceholder("♪"));
   } else {
@@ -353,6 +372,36 @@ function createPlaceholder(icon) {
   const div = document.createElement("div");
   div.className = "card-thumb-placeholder";
   div.textContent = icon;
+  return div;
+}
+
+// Counter for unique @font-face family names
+let fontPreviewCounter = 0;
+
+function createFontPreview(asset) {
+  const div = document.createElement("div");
+  div.className = "card-thumb-placeholder font-preview";
+
+  const familyName = `nas-preview-${fontPreviewCounter++}`;
+  const sampleText = "Ag";
+
+  // Inject @font-face rule to load the actual font
+  const style = document.createElement("style");
+  style.textContent = `@font-face { font-family: '${familyName}'; src: url('${asset.url}'); }`;
+  div.appendChild(style);
+
+  const glyph = document.createElement("span");
+  glyph.className = "font-glyph";
+  glyph.textContent = sampleText;
+  glyph.style.fontFamily = `'${familyName}', serif`;
+  div.appendChild(glyph);
+
+  // Show font name below glyph
+  const label = document.createElement("span");
+  label.className = "font-label";
+  label.textContent = asset.displayName.replace(/\.[^.]+$/, "");
+  div.appendChild(label);
+
   return div;
 }
 

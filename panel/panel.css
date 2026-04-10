@@ -384,6 +384,12 @@ body {
   display: block;
 }
 
+/* Video thumbnails — same sizing as images */
+video.card-thumb {
+  object-fit: cover;
+  pointer-events: none;
+}
+
 .card-thumb-placeholder {
   width: 100%;
   aspect-ratio: 3 / 4;
@@ -393,6 +399,31 @@ body {
   background: var(--bg-tertiary);
   font-size: 24px;
   color: var(--text-muted);
+}
+
+/* Font preview card — glyph + label stacked */
+.card-thumb-placeholder.font-preview {
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+}
+
+.font-glyph {
+  font-size: 36px;
+  color: var(--text-primary);
+  line-height: 1;
+  letter-spacing: -1px;
+}
+
+.font-label {
+  font-size: 8px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
 }
 
 .card-info {
