@@ -459,6 +459,17 @@ async function analyzeTwitter() {
     }
   }
 
+  // Validate hydration user matches current page — clear stale data
+  // The intercept accumulates users across SPA navigations; hydration JSON
+  // can also contain unrelated user objects (logged-in user, suggested users).
+  // URL-extracted username is ground truth — if it doesn't match, discard.
+  if (hydration.user && username) {
+    const hydrationHandle = hydration.user.screenName?.toLowerCase();
+    if (hydrationHandle && hydrationHandle !== username.toLowerCase()) {
+      hydration.user = null;
+    }
+  }
+
   // Build platform metadata (merge all sources)
   // URL-extracted username is the most reliable source on SPA navigations —
   // hydration and intercept data can be stale from a previously visited profile
