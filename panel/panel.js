@@ -206,7 +206,16 @@ function enrichAssets(networkResources, imageContext, platformResult) {
   // Instagram/TikTok/etc deliver video via DASH/MSE — webRequest only captures
   // moof+mdat fragments (unplayable without init segment). The fetch interceptor
   // captures complete video CDN URLs from API responses instead.
-  const isStreamingPlatform = platformResult?.platform && ["instagram", "tiktok"].includes(platformResult.platform);
+  // Use detectedPlatform (URL-based, always set) as fallback when platformResult
+  // is null (e.g. deepScanPlatform timed out or the message channel closed).
+  const streamingPlatforms = ["instagram", "tiktok"];
+  const platformName = platformResult?.platform || detectedPlatform;
+  const isStreamingPlatform = platformName && streamingPlatforms.includes(platformName);
+
+  if (isStreamingPlatform) {
+    const videoCount = networkResources.filter((r) => r.type === "video").length;
+    console.log(`[NAS] Streaming platform "${platformName}" — filtering ${videoCount} webRequest videos (platformResult: ${platformResult ? "OK" : "null"})`);
+  }
 
   // Filter out known DASH/HLS fragment URLs from ANY website
   const filtered = networkResources.filter((r) => {
@@ -518,6 +527,26 @@ function createAssetCard(asset) {
       // MSE-captured videos can't preview — show placeholder with size info
       const sizeStr = asset.contentLength > 0 ? formatBytes(asset.contentLength) : "";
       card.appendChild(createPlaceholder(`🎬${sizeStr ? "\n" + sizeStr : ""}`));
+    } else if (asset.poster) {
+      // Platform videos (Instagram, etc.) — use poster frame as thumbnail
+      // because CDN video URLs can't be loaded directly from the extension context
+      const img = document.createElement("img");
+      img.className = "card-thumb";
+      img.src = asset.poster;
+      img.alt = asset.displayName;
+      img.loading = "lazy";
+      img.onerror = () => {
+        img.replaceWith(createPlaceholder("🎬"));
+      };
+      // Video overlay indicator
+      const overlay = document.createElement("div");
+      overlay.className = "card-video-overlay";
+      overlay.textContent = "▶";
+      const wrapper = document.createElement("div");
+      wrapper.className = "card-thumb-wrapper";
+      wrapper.appendChild(img);
+      wrapper.appendChild(overlay);
+      card.appendChild(wrapper);
     } else {
       const video = document.createElement("video");
       video.className = "card-thumb";
@@ -703,6 +732,15 @@ function initControls() {
               });
               await new Promise((r) => setTimeout(r, 300));
               platformData = await chrome.tabs.sendMessage(tab.id, { action: "deepScanPlatform" });
+            } catch {
+              platformData = null;
+            }
+          }
+          // Fallback: if deepScan failed/returned nothing, try lightweight analyzePlatform
+          // (no scrolling — just grabs what's already loaded + intercepted videos)
+          if (!platformData || !platformData.platform) {
+            try {
+              platformData = await chrome.tabs.sendMessage(tab.id, { action: "analyzePlatform" });
             } catch {
               platformData = null;
             }
@@ -981,8 +1019,10 @@ async function downloadKit() {
           if (!result?.dataUrl) throw new Error("MSE video reassembly failed");
           const res = await fetch(result.dataUrl);
           blob = await res.blob();
-        } else if (asset.url.startsWith("blob:")) {
-          // Blob URLs are page-scoped — proxy through content script
+        } else if (asset.url.startsWith("blob:") || (asset.type === "video" && asset.platformTag)) {
+          // Blob URLs and platform video CDN URLs must be fetched from the
+          // PAGE context (content script) — the extension panel can't access
+          // Instagram/TikTok CDN due to CORS and missing auth cookies.
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
           const result = await chrome.tabs.sendMessage(tab.id, {
             action: "fetchBlob",
@@ -994,6 +1034,7 @@ async function downloadKit() {
           blob = await res.blob();
         } else {
           const response = await fetch(asset.url);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
           blob = await response.blob();
         }
 
@@ -1178,23 +1219,35 @@ function showToast(message) {
 
 function renderPlatformBadge() {
   let badge = document.getElementById("platformBadge");
+  let separator = document.getElementById("platformSep");
   if (!detectedPlatform) {
     if (badge) badge.style.display = "none";
+    if (separator) separator.style.display = "none";
     return;
   }
 
+  const context = document.querySelector(".header-context");
+  if (!context) return;
+
+  if (!separator) {
+    separator = document.createElement("span");
+    separator.id = "platformSep";
+    separator.className = "header-sep";
+    separator.textContent = "·";
+    context.appendChild(separator);
+  }
+
   if (!badge) {
-    // Create badge element dynamically (first time)
     badge = document.createElement("span");
     badge.id = "platformBadge";
     badge.className = "platform-badge";
-    const siteName = document.getElementById("siteName");
-    siteName.parentNode.insertBefore(badge, siteName.nextSibling);
+    context.appendChild(badge);
   }
 
   badge.textContent = PLATFORM_LABELS[detectedPlatform] || detectedPlatform;
   badge.className = `platform-badge platform-${detectedPlatform}`;
   badge.style.display = "inline-flex";
+  separator.style.display = "inline";
 }
 
 function renderPlatformMeta(meta, platform) {

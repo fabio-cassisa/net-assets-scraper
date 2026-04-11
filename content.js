@@ -574,14 +574,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async
   }
 
-  // Proxy fetch for blob: URLs (only accessible from the page's origin)
+  // Proxy fetch for blob: URLs and platform CDN URLs (only accessible from the page's origin)
   if (message.action === "fetchBlob") {
     fetch(message.url)
-      .then((r) => r.blob())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+        // Reject error pages masquerading as assets (e.g. CDN returns HTML 403)
+        const ct = r.headers.get("content-type") || "";
+        if (ct.includes("text/html") && !message.url.includes(".html")) {
+          throw new Error(`Unexpected Content-Type: ${ct}`);
+        }
+        return r.blob();
+      })
       .then((blob) => {
         const reader = new FileReader();
         reader.onloadend = () => {
-          sendResponse({ dataUrl: reader.result, type: blob.type });
+          sendResponse({ dataUrl: reader.result, type: blob.type, size: blob.size });
         };
         reader.readAsDataURL(blob);
       })

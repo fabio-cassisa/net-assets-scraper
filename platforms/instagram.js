@@ -31,7 +31,11 @@ function requestFetchVideoUrls() {
     const handler = (event) => {
       if (event.data?.source === "nas-mse" && event.data?.type === "video-url-list") {
         window.removeEventListener("message", handler);
-        resolve(event.data.videos || []);
+        resolve({
+          videos: event.data.videos || [],
+          audio: event.data.audio || [],
+          bestVideos: event.data.bestVideos || [],
+        });
       }
     };
     window.addEventListener("message", handler);
@@ -40,7 +44,7 @@ function requestFetchVideoUrls() {
     // Timeout after 500ms — interceptor might not be loaded
     setTimeout(() => {
       window.removeEventListener("message", handler);
-      resolve([]);
+      resolve({ videos: [], audio: [], bestVideos: [] });
     }, 500);
   });
 }
@@ -517,6 +521,36 @@ function isInstagramCdnUrl(url) {
   return IG_CDN_PATTERN.test(url) && !url.includes("static.cdninstagram.com/rsrc");
 }
 
+// ─── Video Poster Extraction ─────────────────────────────────────────
+// Collects poster frames from <video> elements on the page.
+// These are used as thumbnails for fetch-intercepted videos in the panel
+// (the extension panel can't load CDN video URLs directly due to CORS).
+
+function getVideoPosters() {
+  const posters = [];
+  const seen = new Set();
+  const videos = document.querySelectorAll("video");
+
+  for (const video of videos) {
+    const poster = video.poster;
+    if (poster && !seen.has(poster) && IG_CDN_PATTERN.test(poster)) {
+      seen.add(poster);
+      posters.push(poster);
+    }
+  }
+
+  // Also check og:image as a fallback poster for the page's main video
+  const ogImage = document.querySelector('meta[property="og:image"]');
+  if (ogImage) {
+    const ogUrl = ogImage.getAttribute("content");
+    if (ogUrl && !seen.has(ogUrl) && IG_CDN_PATTERN.test(ogUrl)) {
+      posters.push(ogUrl);
+    }
+  }
+
+  return posters;
+}
+
 // ─── Video URL Extraction from Meta / JSON-LD ────────────────────────
 // Instagram serves video via MSE (blob: URLs + fragmented segments).
 // Complete video files are only available from og:video meta tags and
@@ -729,9 +763,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const result = analyzeInstagram();
 
         // Strategy 1: Fetch-intercepted video URLs (direct CDN links — preferred)
-        const fetchVideos = await requestFetchVideoUrls();
-        if (fetchVideos.length > 0) {
-          for (const video of fetchVideos) {
+        const fetchResult = await requestFetchVideoUrls();
+        const bestVideos = fetchResult.bestVideos;
+        if (bestVideos.length > 0) {
+          // Try to find poster frames from <video> elements on the page
+          const pagePosters = getVideoPosters();
+
+          for (const video of bestVideos) {
             // Dedup against assets already found via DOM analysis
             if (result.assets.some((a) => a.url === video.url)) continue;
             result.assets.push({
@@ -744,12 +782,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               width: video.width || 0,
               height: video.height || 0,
               platformTag: "instagram-video",
+              poster: pagePosters.shift() || null,
+              // Pipeline metadata — forwarded to panel for mux/transcode
+              audioUrl: video.audioUrl || null,
+              codec: video.codec || null,
+              audioCodec: video.audioCodec || null,
+              needsMux: video.needsMux || false,
+              needsTranscode: video.needsTranscode || false,
+              videoId: video.id || null,
+              bandwidth: video.bandwidth || 0,
             });
           }
         }
 
         // Strategy 2: MSE-captured video segments (fallback if fetch found nothing)
-        if (fetchVideos.length === 0) {
+        if (bestVideos.length === 0) {
           const mseVideos = await requestMSEVideoList();
           if (mseVideos.length > 0) {
             for (const video of mseVideos) {
@@ -787,9 +834,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     deepScanInstagram()
       .then(async (result) => {
         // Strategy 1: Fetch-intercepted video URLs (preferred)
-        const fetchVideos = await requestFetchVideoUrls();
-        if (fetchVideos.length > 0) {
-          for (const video of fetchVideos) {
+        const fetchResult = await requestFetchVideoUrls();
+        const bestVideos = fetchResult.bestVideos;
+        if (bestVideos.length > 0) {
+          const pagePosters = getVideoPosters();
+
+          for (const video of bestVideos) {
             if (result.assets.some((a) => a.url === video.url)) continue;
             result.assets.push({
               url: video.url,
@@ -801,12 +851,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               width: video.width || 0,
               height: video.height || 0,
               platformTag: "instagram-video",
+              poster: pagePosters.shift() || null,
+              // Pipeline metadata
+              audioUrl: video.audioUrl || null,
+              codec: video.codec || null,
+              audioCodec: video.audioCodec || null,
+              needsMux: video.needsMux || false,
+              needsTranscode: video.needsTranscode || false,
+              videoId: video.id || null,
+              bandwidth: video.bandwidth || 0,
             });
           }
         }
 
         // Strategy 2: MSE fallback
-        if (fetchVideos.length === 0) {
+        if (bestVideos.length === 0) {
           const mseVideos = await requestMSEVideoList();
           if (mseVideos.length > 0) {
             for (const video of mseVideos) {

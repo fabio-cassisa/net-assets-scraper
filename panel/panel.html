@@ -10,8 +10,8 @@
   <!-- Header -->
   <header class="panel-header">
     <div class="header-row">
-      <div class="header-title">
-        <h1>NAS<span class="accent">.</span></h1>
+      <div class="header-left">
+        <h1 class="header-brand">NAS<span class="accent">.</span></h1>
         <span class="version">v2</span>
       </div>
       <button class="filter-chip scan-chip" id="refreshBtn" title="Re-scan page">
@@ -19,7 +19,9 @@
         <span>Scan</span>
       </button>
     </div>
-    <p class="site-name" id="siteName">—</p>
+    <div class="header-context">
+      <span class="site-name" id="siteName">—</span>
+    </div>
   </header>
 
   <!-- Filter Chips -->
@@ -114,6 +116,8 @@
   <div class="toast" id="toast"></div>
 
   <script src="../lib/jszip.min.js"></script>
+  <script src="../lib/mp4box.all.min.js"></script>
+  <script src="../lib/video-pipeline.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>
