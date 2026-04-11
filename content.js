@@ -576,22 +576,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Proxy fetch for blob: URLs and platform CDN URLs (only accessible from the page's origin)
   if (message.action === "fetchBlob") {
-    fetch(message.url)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
-        // Reject error pages masquerading as assets (e.g. CDN returns HTML 403)
-        const ct = r.headers.get("content-type") || "";
-        if (ct.includes("text/html") && !message.url.includes(".html")) {
-          throw new Error(`Unexpected Content-Type: ${ct}`);
-        }
-        return r.blob();
-      })
-      .then((blob) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          sendResponse({ dataUrl: reader.result, type: blob.type, size: blob.size });
-        };
-        reader.readAsDataURL(blob);
+    // TikTok (and some other platforms) serve video from subdomains that require
+    // cookies/credentials from the main domain. Content scripts (ISOLATED world)
+    // can't always send these cross-subdomain cookies. Use the MAIN world via
+    // an injected script + message bridge for reliable CDN fetches.
+    fetchBlobViaMainWorld(message.url)
+      .then((result) => {
+        sendResponse(result);
       })
       .catch((err) => {
         sendResponse({ error: err.message });
@@ -599,5 +590,100 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async
   }
 });
+
+/**
+ * Fetch a blob URL from the MAIN world where the page's full cookie jar
+ * and origin context are available. Falls back to ISOLATED world fetch
+ * if the bridge fails.
+ */
+async function fetchBlobViaMainWorld(url) {
+  const requestId = `nas_fetch_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        document.removeEventListener("__NAS_FETCH_RESULT__", handler);
+        // Fallback: try ISOLATED world fetch directly
+        fetchBlobDirect(url).then(resolve).catch(reject);
+      }
+    }, 15000);
+
+    function handler(e) {
+      let data;
+      try { data = JSON.parse(e.detail); } catch { return; }
+      if (data.requestId !== requestId) return;
+      settled = true;
+      clearTimeout(timeout);
+      document.removeEventListener("__NAS_FETCH_RESULT__", handler);
+      if (data.error) {
+        // Fallback to direct fetch on MAIN world failure
+        fetchBlobDirect(url).then(resolve).catch(reject);
+      } else {
+        resolve({ dataUrl: data.dataUrl, type: data.type, size: data.size });
+      }
+    }
+
+    document.addEventListener("__NAS_FETCH_RESULT__", handler);
+
+    // Inject a MAIN world script to perform the fetch
+    const script = document.createElement("script");
+    script.textContent = `
+      (async function() {
+        const requestId = ${JSON.stringify(requestId)};
+        const url = ${JSON.stringify(url)};
+        try {
+          const r = await fetch(url, { credentials: "include" });
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          const blob = await r.blob();
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            document.dispatchEvent(new CustomEvent("__NAS_FETCH_RESULT__", {
+              detail: JSON.stringify({
+                requestId,
+                dataUrl: reader.result,
+                type: blob.type,
+                size: blob.size,
+              }),
+            }));
+          };
+          reader.readAsDataURL(blob);
+        } catch (err) {
+          document.dispatchEvent(new CustomEvent("__NAS_FETCH_RESULT__", {
+            detail: JSON.stringify({ requestId, error: err.message }),
+          }));
+        }
+      })();
+    `;
+    document.documentElement.appendChild(script);
+    script.remove();
+  });
+}
+
+/**
+ * Direct ISOLATED world fetch — works for most CDNs but fails on
+ * platforms that require cross-subdomain cookies (e.g. TikTok).
+ */
+function fetchBlobDirect(url) {
+  return fetch(url)
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+      const ct = r.headers.get("content-type") || "";
+      if (ct.includes("text/html") && !url.includes(".html")) {
+        throw new Error(`Unexpected Content-Type: ${ct}`);
+      }
+      return r.blob();
+    })
+    .then((blob) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          resolve({ dataUrl: reader.result, type: blob.type, size: blob.size });
+        };
+        reader.readAsDataURL(blob);
+      });
+    });
+}
 
 } // end duplicate injection guard
