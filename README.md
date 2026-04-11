@@ -33,7 +33,7 @@ each platform has a dedicated MAIN world intercept script that monkey-patches `f
 | **instagram** | ✅ profile, post, story, reel | ✅ VP9→H.264 transcode + mux | MAIN world MSE + DASH interception | full pipeline — JSON.parse patch, fetch CDN capture, WebCodecs transcode, MP4Box mux |
 | **tiktok** | ✅ profile, covers, dynamic covers | ✅ H.264 direct download | MAIN world fetch/XHR intercept | CSP-safe postMessage bridge (inline script injection blocked by TikTok CSP) |
 | **twitter/x** | ✅ profile pic, banner, tweet images | ✅ H.264 MP4 from GraphQL variants | MAIN world fetch/XHR intercept | handles `legacy` user format, MP4 variants sorted by bitrate |
-| **facebook** | ✅ profile pic, cover photo, feed images | ⚠️ works but needs scroll/video page | MAIN world fetch/XHR intercept | multi-line JSON streaming response parsing, `data-sjs` Relay tag fallback |
+| **facebook** | ✅ profile pic, cover photo, feed images | ✅ H.264 progressive MP4 (HD/SD) | MAIN world fetch/XHR intercept | `progressive_urls` API capture, post-scroll collection window, multi-line JSON parsing |
 | **youtube** | ✅ thumbnails, channel art, avatars | ❌ by design | OG meta + DOM scraping | no video download — cipher/signature war = maintenance trap |
 | **vimeo** | ✅ thumbnails, avatars | ✅ H.264 progressive MP4 | MAIN world fetch/XHR intercept | `progressive[]` config capture, direct CDN fetch (self-authenticated URLs) |
 
@@ -145,14 +145,14 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 
 ## known behaviors
 
-- **facebook videos** — video download URLs only appear when the video post loads in the feed. scroll to video posts or visit a direct video URL for best results.
+- **facebook videos** — deep scan auto-scrolls and waits for video API responses. video URLs are captured via `progressive_urls` in Facebook's GraphQL responses. for best results, let the scan complete fully before downloading.
 - **facebook/twitter CDN expiry** — image URLs are time-signed and expire. download your kit promptly after scanning.
 - **deep scan on long feeds** — scrolling through large feeds (twitter timelines, facebook pages) takes time. a quick scan grabs what's visible; deep scan scrolls for more.
 - **youtube** — no video download by design. youtube's cipher/signature system changes frequently — supporting it would require constant maintenance. images and brand assets work fine.
 
 ## status
 
-🟢 **v2.3 — phase B polish complete**. smart naming, audit fixes, platform metadata, smooth progress.
+🟢 **v2.4 — deep scan + facebook video sprint complete**. scan progress bar, facebook video via new API format, post-scroll collection window.
 
 - [x] passive network capture via `webRequest`
 - [x] smart brand color extraction (CSS vars → meta → DOM frequency)
@@ -164,7 +164,7 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 - [x] instagram — full video pipeline (VP9→H.264 transcode + MP4Box mux)
 - [x] tiktok — H.264 direct download via MAIN world intercept + postMessage bridge
 - [x] twitter/x — GraphQL API intercept, MP4 variants sorted by bitrate
-- [x] facebook — GraphQL intercept, multi-line JSON parsing, images working
+- [x] facebook — GraphQL intercept, multi-line JSON parsing, `progressive_urls` API capture (HD/SD)
 - [x] youtube — thumbnails, channel art, avatars (no video by design)
 - [x] vimeo — progressive H.264 MP4 via config API intercept
 - [x] smart asset naming (`@username-platform-context-WxH.ext`)
@@ -173,11 +173,13 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 - [x] failed download tracking (toast shows actual success/failure count)
 - [x] ghost image filtering (`%22` phantom URLs from SPA DOMs)
 - [x] twitter SPA stale data fix (hydration validation against URL)
+- [x] scan progress bar with animated phase feedback during deep scan
+- [x] facebook video via `progressive_urls` API format (`videoDeliveryResponseFragment`)
+- [x] post-scroll collection window (polls intercept data after scroll completes)
 
 **next — backlog:**
 
-- [ ] smarter deep scan (faster, configurable depth, progress indicator)
-- [ ] facebook video improvement (scroll-triggered video API capture)
+- [ ] smarter deep scan (faster, configurable depth)
 - [ ] quick presets (brand kit / media pack / everything)
 - [ ] size awareness (zip estimate, adnami suite limits warning)
 - [ ] image compression toggle (stay under 3.8MB for suite templates)
@@ -193,7 +195,8 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 
 ## versioning
 
-- `v2.3` — current. phase B polish — smart naming, platform metadata, progress bar, audit fixes.
+- `v2.4` — current. deep scan + facebook video — scan progress bar, facebook `progressive_urls` API capture, post-scroll collection window.
+- `v2.3` — phase B polish — smart naming, platform metadata, progress bar, audit fixes.
 - `v2.2` — social media mode complete — 6 platforms with MAIN world API interception.
 - `v2.1` — instagram video pipeline (VP9→H.264 transcode + mux).
 - `v2.0` — core rebuild with smart extraction.
