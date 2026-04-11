@@ -35,7 +35,7 @@ non-technical people use this — sales, account managers. it needs to be dead s
 
 ## stack
 
-`javascript` · `chrome extension (manifest v3)` · `html` · `css` · `jszip`
+`javascript` · `chrome extension (manifest v3)` · `html` · `css` · `jszip` · `mp4box.js` · `webcodecs`
 
 no build step, no bundler, no framework. vanilla JS. coworkers install by dragging a folder into chrome.
 
@@ -48,9 +48,14 @@ no build step, no bundler, no framework. vanilla JS. coworkers install by draggi
 ├── panel/
 │   ├── panel.html       # popup UI
 │   ├── panel.css        # cyberpunk dark theme
-│   └── panel.js         # panel logic — grid, filters, zip generation
+│   └── panel.js         # panel logic — grid, filters, zip generation, video download pipeline
+├── platforms/
+│   ├── instagram.js              # instagram content script — profile, post, reel, story extraction
+│   └── instagram-video-intercept.js  # MAIN world — JSON.parse + fetch() interception for DASH video capture
 ├── lib/
-│   └── jszip.min.js     # zip library
+│   ├── jszip.min.js     # zip library
+│   ├── mp4box.all.min.js  # mp4 muxing library
+│   └── video-pipeline.js # VP9→H.264 transcode (WebCodecs) + audio mux (MP4Box)
 └── assets/
     └── icons/           # extension icons (16–128px)
 ```
@@ -67,6 +72,28 @@ no build step, no bundler, no framework. vanilla JS. coworkers install by draggi
 
 works on chrome, brave, edge, arc, and other chromium browsers.
 
+## video pipeline
+
+instagram serves all video as VP9 DASH segments with separate audio tracks. most tools and apps (QuickTime, Premiere, PowerPoint, Keynote) can't play VP9. this extension solves that:
+
+```
+instagram page
+     │
+     ├── JSON.parse interception ──→ captures DASH representations from GraphQL
+     │                                populates dashIndex (url → metadata)
+     │
+     ├── fetch() CDN interception ──→ enriches captures with DASH metadata
+     │                                classifies by URL path (/m367/ = VP9, /m78/ = AAC)
+     │
+     └── panel download:
+         1. fetch video (VP9) + audio (AAC) buffers via content script
+         2. transcode VP9 → H.264 via WebCodecs (VideoToolbox HW accel)
+         3. mux H.264 + AAC → universal .mp4 via MP4Box.js
+         4. zip it with human-readable filename
+```
+
+output: universal H.264+AAC `.mp4` files that play everywhere. fallback chain handles failures gracefully — transcode fail → use VP9, mux fail → video-only.
+
 ## permissions
 
 - `webRequest` — passively monitor network requests for assets
@@ -79,7 +106,7 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 
 ## status
 
-🟢 **v2.0 — drop 1 shipped**. core rebuild complete.
+🟢 **v2.1 — drop 2 in progress**. social media mode — instagram video pipeline working.
 
 - [x] passive network capture via `webRequest`
 - [x] smart brand color extraction (CSS vars → meta → DOM frequency)
@@ -88,13 +115,20 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 - [x] preview grid with video frame grabs + font glyph rendering
 - [x] organized zip download with `brand.json`
 - [x] dark cyberpunk theme
+- [x] instagram platform detection + content extraction (profile, post, reel, story)
+- [x] instagram video interception — JSON.parse nuclear patch + fetch() CDN capture
+- [x] VP9 → H.264 transcode via WebCodecs (hardware-accelerated)
+- [x] audio + video mux via MP4Box.js (universal .mp4 output)
+- [x] human-readable asset naming (`nike_di3xk2_1080x1350.mp4`)
+
+**drop 2 remaining:**
+
+- [ ] selective brand download (make brand items opt-in)
+- [ ] brand palette HTML (visual brand card in zip)
+- [ ] font organization (`install/` vs `web/` folders)
+- [ ] lazy rendering for 100+ video cards
 
 **planned:**
-
-🟡 drop 2 — social media mode
-- [ ] instagram, facebook, tiktok, youtube, twitter/x content scripts
-- [ ] platform auto-detection + platform-specific extraction
-- [ ] video downloading
 
 🟡 drop 3 — element capture + advanced
 - [ ] click-to-screenshot DOM elements as PNG
@@ -103,7 +137,8 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 
 ## versioning
 
-- `v2.0` — current. complete rewrite with smart extraction.
+- `v2.1` — current. instagram video pipeline (VP9→H.264 transcode + mux).
+- `v2.0` — core rebuild with smart extraction.
 - `v1.0` — original network capture version. still available via `git checkout v1.0`.
 
 ## why open source
