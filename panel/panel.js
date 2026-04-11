@@ -285,6 +285,7 @@ function enrichAssets(networkResources, imageContext, platformResult) {
           existing.context = pAsset.context || existing.context;
           existing.isLogo = pAsset.isLogo || existing.isLogo;
           existing.isUI = false; // Platform assets are never UI junk
+          existing.username = pAsset.username || existing.username;
           if (pAsset.alt && pAsset.alt.length > existing.alt.length) {
             existing.alt = pAsset.alt;
             existing.displayName = buildDisplayName(existing, pAsset);

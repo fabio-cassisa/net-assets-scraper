@@ -385,9 +385,12 @@ async function analyzeTwitter() {
   const intercepted = await readInterceptData();
 
   // Merge intercepted user data into hydration results
+  // Prefer the user matching the current URL to avoid SPA navigation stale data
   if (intercepted?.users) {
+    const urlUser = username?.toLowerCase();
+    // First pass: look for the user matching the current page URL
     for (const [screenName, user] of Object.entries(intercepted.users)) {
-      if (!hydration.user && user.screenName) {
+      if (!hydration.user && user.screenName && urlUser && user.screenName.toLowerCase() === urlUser) {
         hydration.user = {
           name: user.name,
           screenName: user.screenName,
@@ -399,6 +402,25 @@ async function analyzeTwitter() {
           verified: user.verified || false,
           id: user.id,
         };
+      }
+    }
+    // Fallback: if no URL match, take the first available user
+    if (!hydration.user) {
+      for (const [screenName, user] of Object.entries(intercepted.users)) {
+        if (user.screenName) {
+          hydration.user = {
+            name: user.name,
+            screenName: user.screenName,
+            profilePic: upgradeImageUrl(user.profilePic),
+            banner: user.banner,
+            bio: user.bio,
+            followers: user.followers || 0,
+            following: user.following || 0,
+            verified: user.verified || false,
+            id: user.id,
+          };
+          break;
+        }
       }
     }
   }
