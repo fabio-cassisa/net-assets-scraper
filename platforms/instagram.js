@@ -791,6 +791,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               needsTranscode: video.needsTranscode || false,
               videoId: video.id || null,
               bandwidth: video.bandwidth || 0,
+              // Asset naming metadata — used for human-readable filenames
+              username: video.username || result.platformMeta?.username || null,
+              shortcode: video.shortcode || null,
             });
           }
         }
@@ -860,6 +863,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               needsTranscode: video.needsTranscode || false,
               videoId: video.id || null,
               bandwidth: video.bandwidth || 0,
+              // Asset naming metadata
+              username: video.username || result.platformMeta?.username || null,
+              shortcode: video.shortcode || null,
             });
           }
         }

@@ -47,6 +47,11 @@
   // videoId, dimensions, bandwidth, codec, and paired audio URL.
   const dashIndex = new Map();   // base_url → { videoId, width, height, bandwidth, codec, audioUrl, audioCodec }
 
+  // Media metadata index: video_id → { username, shortcode }
+  // Links DASH video IDs to the media objects that contain the owner
+  // username and shortcode (needed for human-readable file naming).
+  const mediaIndex = new Map();  // id/pk → { username, shortcode }
+
   // Instagram API endpoint patterns (for JSON response parsing — bonus strategy)
   const API_PATTERNS = [
     /instagram\.com\/graphql\/query/,
@@ -243,6 +248,43 @@
   const MAX_DEPTH = 20;
 
   /**
+   * Walk the GraphQL response for media objects that contain both an
+   * id-like field (id, pk, media_id) and owner/shortcode metadata.
+   * Populates mediaIndex so DASH video_ids can be mapped to
+   * { username, shortcode } for human-readable file naming.
+   */
+  function extractMediaMetadata(obj, depth) {
+    if (!obj || typeof obj !== "object" || depth > MAX_DEPTH) return;
+
+    if (Array.isArray(obj)) {
+      for (const item of obj) extractMediaMetadata(item, depth + 1);
+      return;
+    }
+
+    // Look for media-like objects: must have an id field + code or owner
+    const id = obj.id || obj.pk || obj.media_id;
+    const shortcode = obj.code || obj.shortcode || null;
+    const username =
+      obj.owner?.username || obj.user?.username || null;
+
+    if (id && (shortcode || username)) {
+      const existing = mediaIndex.get(String(id));
+      // Merge: keep the most complete record (both fields filled)
+      mediaIndex.set(String(id), {
+        username: username || existing?.username || null,
+        shortcode: shortcode || existing?.shortcode || null,
+      });
+    }
+
+    // Recurse — skip known dead-end keys to avoid wasting cycles
+    for (const key of Object.keys(obj)) {
+      if (key === "all_video_dash_prefetch_representations") continue;
+      if (key === "video_versions" || key === "video_url") continue;
+      extractMediaMetadata(obj[key], depth + 1);
+    }
+  }
+
+  /**
    * Main extraction entry point. Inspects a parsed API response for video
    * data using three strategies in priority order:
    *
@@ -257,6 +299,10 @@
    *       audio-only DASH tracks (width=0).
    */
   function extractVideoData(data) {
+    // Extract media metadata (username, shortcode) from media objects
+    // in the response — needed for human-readable file naming
+    extractMediaMetadata(data, 0);
+
     // P0: DASH prefetch representations (current format)
     const dashReps = findDashPrefetchReps(data);
     if (dashReps.length > 0) {
@@ -348,6 +394,9 @@
     const audioUrl = audioRep ? audioRep.base_url : null;
     const audioCodec = audioRep ? (audioRep.codecs || "mp4a.40.5") : null;
 
+    // Look up media metadata (username, shortcode) for this video
+    const mediaMeta = video.video_id ? mediaIndex.get(String(video.video_id)) : null;
+
     // Index ALL representations so CDN captures can be enriched
     for (const rep of videoReps) {
       dashIndex.set(rep.base_url, {
@@ -359,6 +408,8 @@
         audioUrl,
         audioCodec,
         isBest: rep === best,
+        username: mediaMeta?.username || null,
+        shortcode: mediaMeta?.shortcode || null,
       });
     }
     // Also index the audio URL itself
@@ -385,6 +436,8 @@
       videoId: video.video_id || null,
       audioUrl,
       audioCodec,
+      username: mediaMeta?.username || null,
+      shortcode: mediaMeta?.shortcode || null,
       timestamp: Date.now(),
       source: "dash-api",
     };
@@ -419,13 +472,15 @@
 
     // Extract videoId from parent object (Instagram uses id, pk, or media_id)
     const vid = obj.id || obj.pk || obj.media_id || null;
+    const legacyUsername = obj.owner?.username || obj.user?.username || null;
+    const legacyShortcode = obj.code || obj.shortcode || null;
 
     // P1: video_url (singular) — progressive H.264 with audio
     let hasDirectUrl = false;
     if (typeof obj.video_url === "string" && CDN_PATTERN.test(obj.video_url)) {
       const w = obj.video_width || obj.original_width || 0;
       const h = obj.video_height || obj.original_height || 0;
-      addVideoEntry(obj.video_url, w, h, "h264", null, null, vid);
+      addVideoEntry(obj.video_url, w, h, "h264", null, null, vid, legacyUsername, legacyShortcode);
       hasDirectUrl = true;
       console.log("[NAS] Legacy video_url found:", obj.video_url.slice(0, 80) + "…", `${w}×${h}`, vid ? `vid=${vid}` : "(no id)");
     }
@@ -438,7 +493,7 @@
       if (withVideo.length > 0) {
         const sorted = [...withVideo].sort((a, b) => (b.width || 0) - (a.width || 0));
         const best = sorted[0];
-        addVideoEntry(best.url, best.width || 0, best.height || 0, "unknown", null, null, vid);
+        addVideoEntry(best.url, best.width || 0, best.height || 0, "unknown", null, null, vid, legacyUsername, legacyShortcode);
         console.log("[NAS] Legacy video_versions: picked", `${best.width}×${best.height}`, best.url.slice(0, 80) + "…", vid ? `vid=${vid}` : "(no id)");
       }
     }
@@ -452,7 +507,7 @@
 
   // ─── Shared storage helpers ────────────────────────────────────────
 
-  function addVideoEntry(url, width, height, codec, audioUrl, audioCodec, videoId) {
+  function addVideoEntry(url, width, height, codec, audioUrl, audioCodec, videoId, username, shortcode) {
     if (videoUrls.has(url)) return;
     videoUrls.set(url, {
       url,
@@ -462,6 +517,8 @@
       audioUrl: audioUrl || null,
       audioCodec: audioCodec || null,
       videoId: videoId || null,
+      username: username || null,
+      shortcode: shortcode || null,
       timestamp: Date.now(),
     });
   }
@@ -494,6 +551,8 @@
       entry.bandwidth = dashMeta.bandwidth;
       entry.codec = dashMeta.codec;
       entry.isBest = dashMeta.isBest || false;
+      entry.username = dashMeta.username || null;
+      entry.shortcode = dashMeta.shortcode || null;
       if (type === "video") {
         entry.audioUrl = dashMeta.audioUrl;
         entry.audioCodec = dashMeta.audioCodec;
@@ -676,6 +735,8 @@
               entry.isBest = meta.isBest || false;
               entry.audioUrl = meta.audioUrl;
               entry.audioCodec = meta.audioCodec;
+              entry.username = meta.username || null;
+              entry.shortcode = meta.shortcode || null;
               entry.source = "cdn+dash";
             }
           }
@@ -705,20 +766,26 @@
       // Build normalized descriptors for the pipeline
       return Array.from(groups.values())
         .sort((a, b) => b.timestamp - a.timestamp)
-        .map((v) => ({
-          url: v.url,
-          audioUrl: v.audioUrl || findAudioForVideo(v) || null,
-          width: v.width || 0,
-          height: v.height || 0,
-          codec: v.codec || "unknown",
-          audioCodec: v.audioCodec || null,
-          needsTranscode: isTranscodeNeeded(v.codec),
-          needsMux: !!(v.audioUrl || findAudioForVideo(v)),
-          platform: "instagram",
-          id: v.videoId || null,
-          bandwidth: v.bandwidth || 0,
-          source: v.source || "unknown",
-        }));
+        .map((v) => {
+          // Late-bind media metadata: if DASH didn't have it, check mediaIndex
+          const meta = v.videoId ? mediaIndex.get(String(v.videoId)) : null;
+          return {
+            url: v.url,
+            audioUrl: v.audioUrl || findAudioForVideo(v) || null,
+            width: v.width || 0,
+            height: v.height || 0,
+            codec: v.codec || "unknown",
+            audioCodec: v.audioCodec || null,
+            needsTranscode: isTranscodeNeeded(v.codec),
+            needsMux: !!(v.audioUrl || findAudioForVideo(v)),
+            platform: "instagram",
+            id: v.videoId || null,
+            bandwidth: v.bandwidth || 0,
+            source: v.source || "unknown",
+            username: v.username || meta?.username || null,
+            shortcode: v.shortcode || meta?.shortcode || null,
+          };
+        });
     },
 
     get bestCount() {
@@ -732,7 +799,7 @@
 
     get count() { return videoUrls.size; },
     get audioCount() { return audioUrls.size; },
-    clear() { videoUrls.clear(); audioUrls.clear(); dashIndex.clear(); },
+    clear() { videoUrls.clear(); audioUrls.clear(); dashIndex.clear(); mediaIndex.clear(); },
   };
 
   // ─── Cross-world message bridge ────────────────────────────────────

@@ -310,6 +310,17 @@ function enrichAssets(networkResources, imageContext, platformResult) {
           isBlob: pAsset.isBlob || false,
           isMSECapture: pAsset.isMSECapture || false,
           mseVideoId: pAsset.mseVideoId || null,
+          // Pipeline metadata for DASH video muxing / transcoding
+          needsMux: pAsset.needsMux || false,
+          audioUrl: pAsset.audioUrl || null,
+          audioCodec: pAsset.audioCodec || null,
+          needsTranscode: pAsset.needsTranscode || false,
+          videoId: pAsset.videoId || null,
+          codec: pAsset.codec || null,
+          bandwidth: pAsset.bandwidth || 0,
+          // Asset naming metadata (username + shortcode for human-readable filenames)
+          username: pAsset.username || null,
+          shortcode: pAsset.shortcode || null,
         });
       }
     }
@@ -538,15 +549,7 @@ function createAssetCard(asset) {
       img.onerror = () => {
         img.replaceWith(createPlaceholder("🎬"));
       };
-      // Video overlay indicator
-      const overlay = document.createElement("div");
-      overlay.className = "card-video-overlay";
-      overlay.textContent = "▶";
-      const wrapper = document.createElement("div");
-      wrapper.className = "card-thumb-wrapper";
-      wrapper.appendChild(img);
-      wrapper.appendChild(overlay);
-      card.appendChild(wrapper);
+      card.appendChild(img);
     } else {
       const video = document.createElement("video");
       video.className = "card-thumb";
@@ -958,6 +961,13 @@ function renderMeta(meta) {
 }
 
 // ─── Download / Zip Generation ───────────────────────────────────────
+
+/** Convert a data URL (from content script fetchBlob) to an ArrayBuffer. */
+async function dataUrlToArrayBuffer(dataUrl) {
+  const res = await fetch(dataUrl);
+  return res.arrayBuffer();
+}
+
 function initDownload() {
   document.getElementById("downloadBtn").addEventListener("click", downloadKit);
 }
@@ -1004,10 +1014,21 @@ async function downloadKit() {
 
     updateProgress();
 
+    // Transcode mutex — serialize heavy video processing (1 at a time)
+    // so we don't spawn 30 WebCodecs instances and melt the GPU
+    let _transcodeGate = Promise.resolve();
+    function acquireTranscodeLock() {
+      let release;
+      const prev = _transcodeGate;
+      _transcodeGate = new Promise((r) => (release = r));
+      return { wait: prev, release };
+    }
+
     // Download each selected asset
     const promises = selected.map(async (asset) => {
       try {
         let blob;
+        let wasMuxed = false;
 
         if (asset.isMSECapture && asset.mseVideoId) {
           // MSE-captured video — reassemble via content script bridge
@@ -1019,6 +1040,68 @@ async function downloadKit() {
           if (!result?.dataUrl) throw new Error("MSE video reassembly failed");
           const res = await fetch(result.dataUrl);
           blob = await res.blob();
+
+        } else if (asset.needsMux && asset.audioUrl) {
+          // ── DASH video with separate audio — fetch both, transcode, mux ──
+          // Acquire lock so only 1 transcode runs at a time (GPU-heavy)
+          const lock = acquireTranscodeLock();
+          await lock.wait;
+
+          try {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            const vidLabel = asset.videoId
+              ? asset.videoId.slice(-6)
+              : String(selected.indexOf(asset) + 1);
+
+            // 1. Fetch video buffer
+            progressText.textContent = `Fetching video ${vidLabel}…`;
+            const vidResult = await chrome.tabs.sendMessage(tab.id, {
+              action: "fetchBlob",
+              url: asset.url,
+            });
+            if (vidResult?.error) throw new Error(`Video fetch: ${vidResult.error}`);
+            let videoBuffer = await dataUrlToArrayBuffer(vidResult.dataUrl);
+
+            // 2. Fetch audio buffer
+            progressText.textContent = `Fetching audio ${vidLabel}…`;
+            const audResult = await chrome.tabs.sendMessage(tab.id, {
+              action: "fetchBlob",
+              url: asset.audioUrl,
+            });
+            if (audResult?.error) throw new Error(`Audio fetch: ${audResult.error}`);
+            const audioBuffer = await dataUrlToArrayBuffer(audResult.dataUrl);
+
+            // 3. Transcode VP9 → H.264 if needed (graceful fallback to VP9 if it fails)
+            if (asset.needsTranscode && typeof VideoPipeline.transcode === "function") {
+              try {
+                progressText.textContent = `Transcoding ${vidLabel}…`;
+                videoBuffer = await VideoPipeline.transcode(videoBuffer, ({ percent, detail }) => {
+                  progressText.textContent = `Transcoding ${vidLabel}: ${detail || percent + "%"}`;
+                });
+                console.log(`[downloadKit] Transcoded ${vidLabel} VP9 → H.264`);
+              } catch (err) {
+                console.warn(`[downloadKit] Transcode failed for ${vidLabel}, using VP9:`, err);
+                // videoBuffer stays as original VP9 — mux may fail (MP4Box VP9 limitation),
+                // in which case the fallback below serves video-only
+              }
+            }
+
+            // 4. Mux video + audio → .mp4
+            progressText.textContent = `Muxing ${vidLabel}…`;
+            try {
+              blob = await VideoPipeline.mux(videoBuffer, audioBuffer, ({ percent, detail }) => {
+                progressText.textContent = `Muxing ${vidLabel}: ${detail || percent + "%"}`;
+              });
+              wasMuxed = true;
+              console.log(`[downloadKit] Muxed ${vidLabel}: ${(blob.size / 1024 / 1024).toFixed(1)} MB`);
+            } catch (muxErr) {
+              console.warn(`[downloadKit] Mux failed for ${vidLabel}, using video-only:`, muxErr);
+              blob = new Blob([videoBuffer], { type: "video/mp4" });
+            }
+          } finally {
+            lock.release(); // let next video proceed
+          }
+
         } else if (asset.url.startsWith("blob:") || (asset.type === "video" && asset.platformTag)) {
           // Blob URLs and platform video CDN URLs must be fetched from the
           // PAGE context (content script) — the extension panel can't access
@@ -1043,7 +1126,8 @@ async function downloadKit() {
         const ext = getActualExtension(asset, actualType);
 
         // Validate video files — skip DASH/HLS fragments that aren't playable
-        if (asset.type === "video" && !asset.isMSECapture) {
+        // (muxed videos are guaranteed playable by construction)
+        if (asset.type === "video" && !asset.isMSECapture && !wasMuxed) {
           const isPlayable = await isPlayableVideo(blob);
           if (!isPlayable) {
             console.warn(`Skipping unplayable video fragment: ${asset.displayName}`);
@@ -1145,6 +1229,20 @@ function getActualExtension(asset, blobType) {
 }
 
 function buildFinalFilename(asset, ext) {
+  // Platform-aware naming: use username + shortcode when available
+  // Produces: nike_DI3xK2_1080x1350.mp4 instead of api-capture-mnu0xahl.mp4
+  if (asset.username || asset.shortcode) {
+    const parts = [];
+    if (asset.username) parts.push(asset.username);
+    if (asset.shortcode) parts.push(asset.shortcode);
+    // Append dimensions if known (helps identify quality at a glance)
+    const w = asset.domWidth || 0;
+    const h = asset.domHeight || 0;
+    if (w > 0 && h > 0) parts.push(`${w}x${h}`);
+    const name = parts.join("_") + "." + (ext || "mp4");
+    return sanitizeFilename(name);
+  }
+
   let name = asset.displayName;
 
   // Make sure extension matches actual detected type
