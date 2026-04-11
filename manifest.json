@@ -44,6 +44,11 @@
       "matches": ["*://*.instagram.com/*"],
       "js": ["platforms/instagram.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.tiktok.com/*"],
+      "js": ["platforms/tiktok.js"],
+      "run_at": "document_idle"
     }
   ]
 }

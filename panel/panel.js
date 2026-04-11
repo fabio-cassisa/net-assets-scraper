@@ -56,7 +56,8 @@ const PLATFORM_LABELS = {
 
 const PLATFORM_SCRIPTS = {
   instagram: "platforms/instagram.js",
-  // Future: youtube, twitter, tiktok, facebook
+  tiktok: "platforms/tiktok.js",
+  // Future: youtube, twitter, facebook
 };
 
 function detectPlatform(url) {
