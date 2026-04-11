@@ -103,38 +103,55 @@ function extractProfileData() {
   const pathMatch = window.location.pathname.match(/^\/@([\w.]+)/);
   if (pathMatch) data.username = pathMatch[1];
 
-  // Try UNIVERSAL_DATA first
-  const universal = parseUniversalData();
-  const userInfo = universal?.userDetail?.userInfo;
-  if (userInfo?.user) {
-    const u = userInfo.user;
-    data.username = u.uniqueId || data.username;
-    data.displayName = u.nickname || null;
-    data.bio = u.signature || null;
-    data.profilePic = u.avatarLarger || u.avatarMedium || null;
-    data.profilePicThumb = u.avatarThumb || null;
-    data.verified = u.verified || false;
-    if (userInfo.stats) {
-      data.stats = {
-        followers: userInfo.stats.followerCount || 0,
-        following: userInfo.stats.followingCount || 0,
-        likes: userInfo.stats.heartCount || userInfo.stats.heart || 0,
-        videos: userInfo.stats.videoCount || 0,
-      };
-    }
-    return data;
-  }
-
-  // Fallback to SIGI_STATE
-  const sigi = parseSigiState();
-  if (sigi?.UserModule && data.username) {
-    const u = sigi.UserModule[data.username];
+  // Try MAIN world intercept data first
+  const intercepted = readInterceptData();
+  if (intercepted?.users && data.username) {
+    const u = intercepted.users[data.username];
     if (u) {
       data.displayName = u.nickname || null;
       data.bio = u.signature || null;
       data.profilePic = u.avatarLarger || u.avatarMedium || null;
-      data.profilePicThumb = u.avatarThumb || null;
       data.verified = u.verified || false;
+      data.followerCount = u.followerCount || 0;
+    }
+  }
+
+  // Try UNIVERSAL_DATA
+  if (!data.profilePic) {
+    const universal = parseUniversalData();
+    const userInfo = universal?.userDetail?.userInfo;
+    if (userInfo?.user) {
+      const u = userInfo.user;
+      data.username = u.uniqueId || data.username;
+      data.displayName = u.nickname || data.displayName;
+      data.bio = u.signature || data.bio;
+      data.profilePic = u.avatarLarger || u.avatarMedium || null;
+      data.profilePicThumb = u.avatarThumb || null;
+      data.verified = u.verified || data.verified;
+      if (userInfo.stats) {
+        data.stats = {
+          followers: userInfo.stats.followerCount || 0,
+          following: userInfo.stats.followingCount || 0,
+          likes: userInfo.stats.heartCount || userInfo.stats.heart || 0,
+          videos: userInfo.stats.videoCount || 0,
+        };
+      }
+      return data;
+    }
+  }
+
+  // Fallback to SIGI_STATE
+  if (!data.profilePic) {
+    const sigi = parseSigiState();
+    if (sigi?.UserModule && data.username) {
+      const u = sigi.UserModule[data.username];
+      if (u) {
+        data.displayName = u.nickname || data.displayName;
+        data.bio = u.signature || data.bio;
+        data.profilePic = u.avatarLarger || u.avatarMedium || null;
+        data.profilePicThumb = u.avatarThumb || null;
+        data.verified = u.verified || data.verified;
+      }
     }
   }
 
@@ -227,6 +244,35 @@ function extractItems() {
   const items = [];
   const seenIds = new Set();
 
+  // MAIN world intercept data (most reliable on current TikTok)
+  const intercepted = readInterceptData();
+  if (intercepted?.videos) {
+    for (const [id, v] of Object.entries(intercepted.videos)) {
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      items.push({
+        id,
+        desc: v.desc || "",
+        author: v.author || null,
+        createTime: v.createTime || 0,
+        isAd: false,
+        video: {
+          url: v.url,
+          playUrl: v.playUrl,
+          downloadUrl: v.downloadUrl,
+          width: v.width || 0,
+          height: v.height || 0,
+          duration: v.duration || 0,
+          cover: v.cover || null,
+          originCover: v.cover || null,
+          dynamicCover: v.dynamicCover || null,
+          format: "mp4",
+          bitrate: 0,
+        },
+      });
+    }
+  }
+
   // UNIVERSAL_DATA — single video page
   const universal = parseUniversalData();
   if (universal?.videoDetail?.itemInfo?.itemStruct) {
@@ -253,10 +299,77 @@ function extractItems() {
   return items;
 }
 
+// ─── MAIN World Intercept Data ───────────────────────────────────────
+// The MAIN world script (tiktok-video-intercept.js) captures video/user
+// data from TikTok's API responses and stores it on window.__NAS_TIKTOK_DATA__.
+// Since we're in ISOLATED world, we read it via a DOM bridge.
+
+function readInterceptData() {
+  try {
+    // Create a bridge script to read MAIN world data
+    const bridge = document.createElement("script");
+    bridge.textContent = `
+      try {
+        const d = window.__NAS_TIKTOK_DATA__;
+        if (d) {
+          const payload = {
+            videos: Object.fromEntries(d.videos || []),
+            users: Object.fromEntries(d.users || []),
+            ready: d.ready || false,
+          };
+          document.dispatchEvent(new CustomEvent("__NAS_TIKTOK_BRIDGE__", {
+            detail: JSON.stringify(payload),
+          }));
+        }
+      } catch {}
+    `;
+    let result = null;
+    const handler = (e) => {
+      try { result = JSON.parse(e.detail); } catch {}
+    };
+    document.addEventListener("__NAS_TIKTOK_BRIDGE__", handler);
+    document.documentElement.appendChild(bridge);
+    bridge.remove();
+    document.removeEventListener("__NAS_TIKTOK_BRIDGE__", handler);
+    return result;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Single Video Page Extraction ────────────────────────────────────
 
 function extractSingleVideo() {
-  // Try UNIVERSAL_DATA first
+  // Try MAIN world intercept data first (most reliable on current TikTok)
+  const intercepted = readInterceptData();
+  if (intercepted?.videos) {
+    const entries = Object.entries(intercepted.videos);
+    if (entries.length > 0) {
+      const [id, v] = entries[0];
+      return {
+        id,
+        desc: v.desc || "",
+        author: v.author || null,
+        createTime: v.createTime || 0,
+        isAd: false,
+        video: {
+          url: v.url,
+          playUrl: v.playUrl,
+          downloadUrl: v.downloadUrl,
+          width: v.width || 0,
+          height: v.height || 0,
+          duration: v.duration || 0,
+          cover: v.cover || null,
+          originCover: v.cover || null,
+          dynamicCover: v.dynamicCover || null,
+          format: "mp4",
+          bitrate: 0,
+        },
+      };
+    }
+  }
+
+  // Try UNIVERSAL_DATA
   const universal = parseUniversalData();
   const itemStruct = universal?.videoDetail?.itemInfo?.itemStruct;
   if (itemStruct) return normalizeItem(itemStruct);

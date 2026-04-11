@@ -47,6 +47,12 @@
     },
     {
       "matches": ["*://*.tiktok.com/*"],
+      "js": ["platforms/tiktok-video-intercept.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://*.tiktok.com/*"],
       "js": ["platforms/tiktok.js"],
       "run_at": "document_idle"
     },
