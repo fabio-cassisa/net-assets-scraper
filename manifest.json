@@ -64,6 +64,11 @@
       "matches": ["*://*.youtube.com/*"],
       "js": ["platforms/youtube.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.vimeo.com/*"],
+      "js": ["platforms/vimeo.js"],
+      "run_at": "document_idle"
     }
   ]
 }

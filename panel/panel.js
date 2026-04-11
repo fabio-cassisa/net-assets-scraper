@@ -44,6 +44,7 @@ const PLATFORM_PATTERNS = {
   twitter:   /twitter\.com|x\.com/,
   tiktok:    /tiktok\.com/,
   facebook:  /facebook\.com/,
+  vimeo:     /vimeo\.com/,
 };
 
 const PLATFORM_LABELS = {
@@ -52,6 +53,7 @@ const PLATFORM_LABELS = {
   twitter:   "Twitter / X",
   tiktok:    "TikTok",
   facebook:  "Facebook",
+  vimeo:     "Vimeo",
 };
 
 const PLATFORM_SCRIPTS = {
@@ -60,6 +62,7 @@ const PLATFORM_SCRIPTS = {
   facebook: "platforms/facebook.js",
   twitter: "platforms/twitter.js",
   youtube: "platforms/youtube.js",
+  vimeo: "platforms/vimeo.js",
 };
 
 function detectPlatform(url) {
@@ -211,7 +214,7 @@ function enrichAssets(networkResources, imageContext, platformResult) {
   // captures complete video CDN URLs from API responses instead.
   // Use detectedPlatform (URL-based, always set) as fallback when platformResult
   // is null (e.g. deepScanPlatform timed out or the message channel closed).
-  const streamingPlatforms = ["instagram", "tiktok", "facebook", "twitter", "youtube"];
+  const streamingPlatforms = ["instagram", "tiktok", "facebook", "twitter", "youtube", "vimeo"];
   const platformName = platformResult?.platform || detectedPlatform;
   const isStreamingPlatform = platformName && streamingPlatforms.includes(platformName);
 
