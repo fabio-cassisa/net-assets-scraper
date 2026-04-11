@@ -460,9 +460,11 @@ async function analyzeTwitter() {
   }
 
   // Build platform metadata (merge all sources)
+  // URL-extracted username is the most reliable source on SPA navigations —
+  // hydration and intercept data can be stale from a previously visited profile
   result.platformMeta = {
     name: hydration.user?.name || dom.name || meta.name || null,
-    username: hydration.user?.screenName || dom.handle || username || null,
+    username: username || hydration.user?.screenName || dom.handle || null,
     bio: hydration.user?.bio || dom.bio || meta.description || null,
     followers: hydration.user?.followers || 0,
     following: hydration.user?.following || 0,
