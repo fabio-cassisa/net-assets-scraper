@@ -235,6 +235,22 @@ body {
   color: var(--accent);
 }
 
+/* Scan progress bar — in header, below site name */
+.scan-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 6px;
+}
+
+.scan-progress .progress-track {
+  flex: 1;
+}
+
+.scan-progress .progress-fill {
+  transition: width 0.4s ease;
+}
+
 /* ─── Controls Bar ────────────────────────────────────────────────── */
 .controls-bar {
   display: flex;

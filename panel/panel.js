@@ -711,10 +711,28 @@ function initControls() {
     const btn = document.getElementById("refreshBtn");
     const btnText = btn.querySelector("span");
     const originalText = btnText.textContent;
+    const scanProgress = document.getElementById("scanProgress");
+    const scanFill = document.getElementById("scanProgressFill");
+    const scanText = document.getElementById("scanProgressText");
 
     // Show scanning state
     btn.disabled = true;
     btnText.textContent = "Scanning…";
+    scanProgress.style.display = "flex";
+    scanFill.style.width = "0%";
+    scanText.textContent = "Scrolling page…";
+
+    // Simulated progress: animate 0→85% over ~12s, snap to 100% on completion
+    const scanStartTime = Date.now();
+    const expectedDuration = 12000; // 12s expected scan time
+    const scanTimer = setInterval(() => {
+      const elapsed = Date.now() - scanStartTime;
+      const pct = Math.min(85, (elapsed / expectedDuration) * 85);
+      scanFill.style.width = `${Math.round(pct)}%`;
+      if (pct > 60) scanText.textContent = "Analyzing assets…";
+      else if (pct > 30) scanText.textContent = "Loading content…";
+    }, 200);
+
     allAssets = [];
     domData = null;
     platformData = null;
@@ -792,6 +810,9 @@ function initControls() {
     }
 
     // Always render results — even partial data is better than stale UI
+    clearInterval(scanTimer);
+    scanFill.style.width = "100%";
+    scanText.textContent = "Done";
     renderGrid();
     renderBadges();
     if (domData) {
@@ -803,6 +824,8 @@ function initControls() {
       renderPlatformMeta(platformData.platformMeta, detectedPlatform);
     }
 
+    // Hide scan progress after brief flash of 100%
+    setTimeout(() => { scanProgress.style.display = "none"; }, 600);
     btn.disabled = false;
     btnText.textContent = originalText;
     showToast(`Deep scan complete — ${allAssets.length} assets found`);

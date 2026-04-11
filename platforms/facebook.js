@@ -575,6 +575,35 @@ async function deepScanFacebook() {
     }
 
     window.scrollTo({ top: originalScroll, behavior: "instant" });
+
+    // ── Post-scroll collection window ──
+    // Facebook loads video data lazily via GraphQL — API responses often arrive
+    // after the scroll has finished. Wait and poll the intercept store for new
+    // videos, giving pending network requests time to complete.
+    let lastVideoCount = 0;
+    let stablePolls = 0;
+    const maxWait = 5000;
+    const pollInterval = 500;
+    const collectStart = Date.now();
+
+    while ((Date.now() - collectStart) < maxWait && stablePolls < 3) {
+      await new Promise((r) => setTimeout(r, pollInterval));
+      const snapshot = await readInterceptData();
+      const currentCount = snapshot?.videos ? Object.keys(snapshot.videos).length : 0;
+
+      if (currentCount > lastVideoCount) {
+        lastVideoCount = currentCount;
+        stablePolls = 0; // new video arrived, reset stability counter
+        console.log(`[NAS Facebook] Collection window: ${currentCount} videos captured, waiting for more…`);
+      } else {
+        stablePolls++;
+      }
+    }
+
+    if (lastVideoCount > 0) {
+      console.log(`[NAS Facebook] Collection window complete: ${lastVideoCount} videos captured`);
+    }
+
     await new Promise((r) => setTimeout(r, 300));
   }
 
