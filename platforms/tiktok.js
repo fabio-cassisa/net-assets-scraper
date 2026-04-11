@@ -37,6 +37,7 @@ function detectPageType() {
   if (/^\/discover\/?/.test(path))            return "discover";
   if (/^\/tag\/[\w-]+\/?/.test(path))         return "tag";
   if (/^\/music\/[\w-]+-\d+\/?/.test(path))   return "music";
+  if (/^\/(foryou|fyp)?\/?$/.test(path))       return "feed";
 
   return "other";
 }
@@ -88,7 +89,7 @@ function parseSigiState() {
 
 // ─── Profile Extraction ──────────────────────────────────────────────
 
-function extractProfileData() {
+async function extractProfileData() {
   const data = {
     username: null,
     displayName: null,
@@ -104,7 +105,7 @@ function extractProfileData() {
   if (pathMatch) data.username = pathMatch[1];
 
   // Try MAIN world intercept data first
-  const intercepted = readInterceptData();
+  const intercepted = await readInterceptData();
   if (intercepted?.users && data.username) {
     const u = intercepted.users[data.username];
     if (u) {
@@ -240,12 +241,12 @@ function normalizeItem(item) {
  * Extract all video/photo items from SSR data.
  * Returns array of normalized item descriptors.
  */
-function extractItems() {
+async function extractItems() {
   const items = [];
   const seenIds = new Set();
 
   // MAIN world intercept data (most reliable on current TikTok)
-  const intercepted = readInterceptData();
+  const intercepted = await readInterceptData();
   if (intercepted?.videos) {
     for (const [id, v] of Object.entries(intercepted.videos)) {
       if (seenIds.has(id)) continue;
@@ -302,46 +303,41 @@ function extractItems() {
 // ─── MAIN World Intercept Data ───────────────────────────────────────
 // The MAIN world script (tiktok-video-intercept.js) captures video/user
 // data from TikTok's API responses and stores it on window.__NAS_TIKTOK_DATA__.
-// Since we're in ISOLATED world, we read it via a DOM bridge.
+// Since we're in ISOLATED world, we use postMessage to request it (CSP-safe).
 
-function readInterceptData() {
-  try {
-    // Create a bridge script to read MAIN world data
-    const bridge = document.createElement("script");
-    bridge.textContent = `
-      try {
-        const d = window.__NAS_TIKTOK_DATA__;
-        if (d) {
-          const payload = {
-            videos: Object.fromEntries(d.videos || []),
-            users: Object.fromEntries(d.users || []),
-            ready: d.ready || false,
-          };
-          document.dispatchEvent(new CustomEvent("__NAS_TIKTOK_BRIDGE__", {
-            detail: JSON.stringify(payload),
-          }));
-        }
-      } catch {}
-    `;
-    let result = null;
-    const handler = (e) => {
-      try { result = JSON.parse(e.detail); } catch {}
-    };
-    document.addEventListener("__NAS_TIKTOK_BRIDGE__", handler);
-    document.documentElement.appendChild(bridge);
-    bridge.remove();
-    document.removeEventListener("__NAS_TIKTOK_BRIDGE__", handler);
-    return result;
-  } catch {
-    return null;
-  }
+async function readInterceptData() {
+  // postMessage bridge — CSP-safe communication with MAIN world.
+  // The MAIN world script (tiktok-video-intercept.js) listens for
+  // NAS_TIKTOK_GET_DATA and responds with NAS_TIKTOK_DATA_RESPONSE.
+  const requestId = `nas_tt_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      window.removeEventListener("message", handler);
+      resolve(null); // Fall through to SSR/DOM fallbacks
+    }, 2000);
+
+    function handler(event) {
+      if (event.source !== window) return;
+      const msg = event.data;
+      if (msg?.type !== "NAS_TIKTOK_DATA_RESPONSE") return;
+      if (msg.requestId !== requestId) return;
+
+      clearTimeout(timeout);
+      window.removeEventListener("message", handler);
+      resolve(msg.data || null);
+    }
+
+    window.addEventListener("message", handler);
+    window.postMessage({ type: "NAS_TIKTOK_GET_DATA", requestId }, "*");
+  });
 }
 
 // ─── Single Video Page Extraction ────────────────────────────────────
 
-function extractSingleVideo() {
+async function extractSingleVideo() {
   // Try MAIN world intercept data first (most reliable on current TikTok)
-  const intercepted = readInterceptData();
+  const intercepted = await readInterceptData();
   if (intercepted?.videos) {
     const entries = Object.entries(intercepted.videos);
     if (entries.length > 0) {
@@ -428,7 +424,7 @@ function scrapeVideoFromDOM() {
 
 // ─── Main Analyzer ───────────────────────────────────────────────────
 
-function analyzeTikTok() {
+async function analyzeTikTok() {
   const pageType = detectPageType();
   const result = {
     platform: "tiktok",
@@ -438,7 +434,7 @@ function analyzeTikTok() {
   };
 
   // Profile data (available on profile and video pages)
-  const profile = extractProfileData();
+  const profile = await extractProfileData();
   result.platformMeta = {
     username: profile.username,
     displayName: profile.displayName,
@@ -465,7 +461,7 @@ function analyzeTikTok() {
 
   if (pageType === "profile") {
     // Extract all videos from SSR data
-    const items = extractItems();
+    const items = await extractItems();
     for (const item of items) {
       if (item.isAd) continue; // Skip ads
 
@@ -533,7 +529,7 @@ function analyzeTikTok() {
   }
 
   if (pageType === "video") {
-    const item = extractSingleVideo();
+    const item = await extractSingleVideo();
     if (item?.video?.url) {
       const cover = item.video.originCover || item.video.cover || null;
       result.assets.push({
@@ -615,6 +611,53 @@ function analyzeTikTok() {
     }
   }
 
+  // ─── Catch-all: feed, discover, tag, music, or any other page type ──
+  // The MAIN world intercept captures videos from API responses regardless
+  // of page type. If we haven't extracted any videos yet, pull everything
+  // the intercept has collected so far.
+  if (result.assets.filter((a) => a.type === "video").length === 0) {
+    const items = await extractItems();
+    for (const item of items) {
+      if (item.isAd) continue;
+      if (item.video?.url) {
+        const cover = item.video.originCover || item.video.cover || null;
+        result.assets.push({
+          url: item.video.url,
+          type: "video",
+          context: "feed-video",
+          isLogo: false,
+          isUI: false,
+          alt: item.desc || "",
+          width: item.video.width || 0,
+          height: item.video.height || 0,
+          platformTag: "tiktok-video",
+          poster: cover,
+          videoId: item.id,
+          username: item.author || profile.username,
+          shortcode: item.id,
+          needsMux: false,
+          needsTranscode: false,
+          codec: "h264",
+        });
+
+        if (cover && TT_CDN_PATTERN.test(cover)) {
+          result.assets.push({
+            url: cover,
+            type: "image",
+            context: "video-cover",
+            isLogo: false,
+            isUI: false,
+            alt: item.desc || "",
+            width: item.video.width || 0,
+            height: item.video.height || 0,
+            platformTag: "tiktok-video-cover",
+            username: item.author || profile.username,
+          });
+        }
+      }
+    }
+  }
+
   return result;
 }
 
@@ -622,14 +665,13 @@ function analyzeTikTok() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "analyzePlatform") {
-    try {
-      const result = analyzeTikTok();
-      sendResponse(result);
-    } catch (err) {
-      console.error("NAS TikTok script error:", err);
-      sendResponse({ platform: "tiktok", error: err.message });
-    }
-    return false; // Synchronous — SSR parsing is instant
+    analyzeTikTok()
+      .then((result) => sendResponse(result))
+      .catch((err) => {
+        console.error("NAS TikTok script error:", err);
+        sendResponse({ platform: "tiktok", error: err.message });
+      });
+    return true; // Async — postMessage bridge needs time
   }
 
   if (message.action === "deepScanPlatform") {

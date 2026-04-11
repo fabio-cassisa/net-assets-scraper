@@ -593,10 +593,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 /**
  * Fetch a blob URL from the MAIN world where the page's full cookie jar
- * and origin context are available. Falls back to ISOLATED world fetch
- * if the bridge fails.
+ * and origin context are available. Only uses postMessage bridge on
+ * TikTok (where tiktok-video-intercept.js provides the MAIN world handler).
+ * All other platforms go straight to fetchBlobDirect().
  */
 async function fetchBlobViaMainWorld(url) {
+  // Only TikTok has a MAIN world fetch handler — skip the bridge elsewhere
+  const isTikTok = window.location.hostname.includes("tiktok.com");
+  if (!isTikTok) return fetchBlobDirect(url);
+
   const requestId = `nas_fetch_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
   return new Promise((resolve, reject) => {
@@ -604,60 +609,33 @@ async function fetchBlobViaMainWorld(url) {
     const timeout = setTimeout(() => {
       if (!settled) {
         settled = true;
-        document.removeEventListener("__NAS_FETCH_RESULT__", handler);
+        window.removeEventListener("message", handler);
         // Fallback: try ISOLATED world fetch directly
         fetchBlobDirect(url).then(resolve).catch(reject);
       }
     }, 15000);
 
-    function handler(e) {
-      let data;
-      try { data = JSON.parse(e.detail); } catch { return; }
-      if (data.requestId !== requestId) return;
+    function handler(event) {
+      if (event.source !== window) return;
+      const msg = event.data;
+      if (msg?.type !== "NAS_MAIN_FETCH_RESPONSE") return;
+      if (msg.requestId !== requestId) return;
+
+      if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      document.removeEventListener("__NAS_FETCH_RESULT__", handler);
-      if (data.error) {
+      window.removeEventListener("message", handler);
+
+      if (msg.error) {
         // Fallback to direct fetch on MAIN world failure
         fetchBlobDirect(url).then(resolve).catch(reject);
       } else {
-        resolve({ dataUrl: data.dataUrl, type: data.type, size: data.size });
+        resolve({ dataUrl: msg.dataUrl, type: msg.contentType, size: msg.size });
       }
     }
 
-    document.addEventListener("__NAS_FETCH_RESULT__", handler);
-
-    // Inject a MAIN world script to perform the fetch
-    const script = document.createElement("script");
-    script.textContent = `
-      (async function() {
-        const requestId = ${JSON.stringify(requestId)};
-        const url = ${JSON.stringify(url)};
-        try {
-          const r = await fetch(url, { credentials: "include" });
-          if (!r.ok) throw new Error("HTTP " + r.status);
-          const blob = await r.blob();
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            document.dispatchEvent(new CustomEvent("__NAS_FETCH_RESULT__", {
-              detail: JSON.stringify({
-                requestId,
-                dataUrl: reader.result,
-                type: blob.type,
-                size: blob.size,
-              }),
-            }));
-          };
-          reader.readAsDataURL(blob);
-        } catch (err) {
-          document.dispatchEvent(new CustomEvent("__NAS_FETCH_RESULT__", {
-            detail: JSON.stringify({ requestId, error: err.message }),
-          }));
-        }
-      })();
-    `;
-    document.documentElement.appendChild(script);
-    script.remove();
+    window.addEventListener("message", handler);
+    window.postMessage({ type: "NAS_MAIN_FETCH", requestId, url }, "*");
   });
 }
 

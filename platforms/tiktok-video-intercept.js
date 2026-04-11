@@ -212,5 +212,53 @@
   // Parse SSR data immediately (it's already in the DOM)
   parseExistingSSR();
 
-  console.log("[NAS TikTok intercept] Fetch/XHR intercept active — capturing video URLs from API responses");
+  // ─── postMessage bridge (CSP-safe MAIN↔ISOLATED communication) ────
+  // Content scripts can't inject inline scripts on sites with strict CSP.
+  // Instead, they use window.postMessage to request data and blob fetches.
+
+  window.addEventListener("message", async (event) => {
+    if (event.source !== window) return;
+    const msg = event.data;
+
+    // Share intercepted video/user data with ISOLATED world
+    if (msg?.type === "NAS_TIKTOK_GET_DATA") {
+      window.postMessage({
+        type: "NAS_TIKTOK_DATA_RESPONSE",
+        requestId: msg.requestId,
+        data: {
+          videos: Object.fromEntries(store.videos),
+          users: Object.fromEntries(store.users),
+          ready: store.ready,
+        },
+      }, "*");
+    }
+
+    // Fetch a URL with full page cookies (MAIN world has full cookie jar)
+    if (msg?.type === "NAS_MAIN_FETCH" && msg.url) {
+      try {
+        const r = await fetch(msg.url, { credentials: "include" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const blob = await r.blob();
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          window.postMessage({
+            type: "NAS_MAIN_FETCH_RESPONSE",
+            requestId: msg.requestId,
+            dataUrl: reader.result,
+            contentType: blob.type,
+            size: blob.size,
+          }, "*");
+        };
+        reader.readAsDataURL(blob);
+      } catch (err) {
+        window.postMessage({
+          type: "NAS_MAIN_FETCH_RESPONSE",
+          requestId: msg.requestId,
+          error: err.message,
+        }, "*");
+      }
+    }
+  });
+
+  console.log("[NAS TikTok intercept] Fetch/XHR intercept + postMessage bridge active");
 })();
