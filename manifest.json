@@ -58,8 +58,20 @@
     },
     {
       "matches": ["*://*.facebook.com/*"],
+      "js": ["platforms/facebook-video-intercept.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://*.facebook.com/*"],
       "js": ["platforms/facebook.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.twitter.com/*", "*://*.x.com/*"],
+      "js": ["platforms/twitter-video-intercept.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     },
     {
       "matches": ["*://*.twitter.com/*", "*://*.x.com/*"],
@@ -70,6 +82,12 @@
       "matches": ["*://*.youtube.com/*"],
       "js": ["platforms/youtube.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.vimeo.com/*"],
+      "js": ["platforms/vimeo-video-intercept.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     },
     {
       "matches": ["*://*.vimeo.com/*"],

@@ -6,9 +6,10 @@
 //   - Profile metadata (name, bio, follower counts)
 //
 // Data sources (priority order):
-//   1. OG meta tags + JSON-LD — fast, reliable for basic info + thumbnails
-//   2. Inline player config (progressive[] array) — direct MP4 URLs
-//   3. DOM scraping — fallback for profile/showcase pages
+//   1. MAIN world API intercept (vimeo-video-intercept.js) — richest, captures config API
+//   2. OG meta tags + JSON-LD — fast, reliable for basic info + thumbnails
+//   3. Inline player config (progressive[] array) — direct MP4 URLs (increasingly rare)
+//   4. DOM scraping — fallback for profile/showcase pages
 //
 // Vimeo is the friendliest platform for asset extraction:
 //   - Progressive MP4 URLs are H.264 with muxed audio
@@ -306,9 +307,38 @@ function extractVideoId() {
   return m ? m[1] : null;
 }
 
+// ─── MAIN World Intercept Data (via postMessage bridge) ──────────────
+// Reads data captured by vimeo-video-intercept.js (MAIN world).
+// Uses postMessage because MAIN and ISOLATED worlds can't share globals.
+
+async function readInterceptData() {
+  const requestId = `nas_vm_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      window.removeEventListener("message", handler);
+      resolve(null);
+    }, 2000);
+
+    function handler(event) {
+      if (event.source !== window) return;
+      const msg = event.data;
+      if (msg?.type !== "NAS_VIMEO_DATA_RESPONSE") return;
+      if (msg.requestId !== requestId) return;
+
+      clearTimeout(timeout);
+      window.removeEventListener("message", handler);
+      resolve(msg.data || null);
+    }
+
+    window.addEventListener("message", handler);
+    window.postMessage({ type: "NAS_VIMEO_GET_DATA", requestId }, "*");
+  });
+}
+
 // ─── Main Analyzer ───────────────────────────────────────────────────
 
-function analyzeVimeo() {
+async function analyzeVimeo() {
   const pageType = detectPageType();
   const result = {
     platform: "vimeo",
@@ -323,6 +353,59 @@ function analyzeVimeo() {
   const jsonLd = extractJsonLd();
   const config = parsePlayerConfig();
   const dom = extractFromDOM();
+
+  // ── Read intercepted API data (from MAIN world) ──
+  const intercepted = await readInterceptData();
+
+  // Merge intercepted video data into config results
+  if (intercepted?.videos) {
+    // Group by videoId, take highest quality per video
+    const byVideo = new Map();
+    for (const [qualityKey, video] of Object.entries(intercepted.videos)) {
+      if (!video.url) continue;
+      const vid = video.videoId || videoId || "unknown";
+      const existing = byVideo.get(vid);
+      if (!existing || (video.width || 0) > (existing.width || 0)) {
+        byVideo.set(vid, video);
+      }
+    }
+    // Add best quality videos that aren't already in config
+    for (const [vid, video] of byVideo) {
+      if (!config.videos.some((v) => v.url === video.url)) {
+        config.videos.unshift({
+          url: video.url,
+          width: video.width || 0,
+          height: video.height || 0,
+          quality: video.quality || null,
+          fps: video.fps || 0,
+          codec: "h264",
+        });
+      }
+    }
+  }
+
+  // Merge intercepted owner data
+  if (intercepted?.users) {
+    for (const [key, user] of Object.entries(intercepted.users)) {
+      if (!config.owner && user.name) {
+        config.owner = {
+          name: user.name,
+          url: user.url || null,
+          img: user.img || null,
+          id: user.id || null,
+        };
+      }
+    }
+  }
+
+  // Merge intercepted thumbnail data
+  if (intercepted?.thumbnails) {
+    for (const [vid, thumb] of Object.entries(intercepted.thumbnails)) {
+      if (thumb.url && !config.thumbnail) {
+        config.thumbnail = thumb.url;
+      }
+    }
+  }
 
   // Build platform metadata
   result.platformMeta = {
@@ -465,14 +548,13 @@ function analyzeVimeo() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "analyzePlatform") {
-    try {
-      const result = analyzeVimeo();
-      sendResponse(result);
-    } catch (err) {
-      console.error("NAS Vimeo script error:", err);
-      sendResponse({ platform: "vimeo", error: err.message });
-    }
-    return false; // Synchronous
+    analyzeVimeo()
+      .then((result) => sendResponse(result))
+      .catch((err) => {
+        console.error("NAS Vimeo script error:", err);
+        sendResponse({ platform: "vimeo", error: err.message });
+      });
+    return true; // Async — waiting for intercept data
   }
 
   if (message.action === "deepScanPlatform") {
@@ -518,7 +600,7 @@ async function deepScanVimeo() {
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  return analyzeVimeo();
+  return await analyzeVimeo();
 }
 
 } // end duplicate injection guard

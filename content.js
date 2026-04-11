@@ -593,14 +593,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 /**
  * Fetch a blob URL from the MAIN world where the page's full cookie jar
- * and origin context are available. Only uses postMessage bridge on
- * TikTok (where tiktok-video-intercept.js provides the MAIN world handler).
+ * and origin context are available. Uses postMessage bridge on platforms
+ * that have MAIN world intercept scripts (which provide the NAS_MAIN_FETCH handler).
  * All other platforms go straight to fetchBlobDirect().
  */
 async function fetchBlobViaMainWorld(url) {
-  // Only TikTok has a MAIN world fetch handler — skip the bridge elsewhere
-  const isTikTok = window.location.hostname.includes("tiktok.com");
-  if (!isTikTok) return fetchBlobDirect(url);
+  // Platforms with MAIN world fetch handlers
+  const host = window.location.hostname;
+  const hasMainWorldHandler = host.includes("tiktok.com")
+    || host.includes("twitter.com")
+    || host.includes("x.com")
+    || host.includes("facebook.com")
+    || host.includes("vimeo.com");
+
+  if (!hasMainWorldHandler) return fetchBlobDirect(url);
 
   const requestId = `nas_fetch_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 

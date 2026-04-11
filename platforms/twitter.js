@@ -7,9 +7,10 @@
 //   - Profile metadata (name, handle, bio, follower counts)
 //
 // Data sources (priority order):
-//   1. OG / Twitter Card meta tags — fastest, always on SSR
-//   2. __NEXT_DATA__ hydration JSON — richest when available
-//   3. DOM scraping with data-testid — fallback for SPA navigation
+//   1. MAIN world API intercept (twitter-video-intercept.js) — richest, captures GraphQL
+//   2. OG / Twitter Card meta tags — fastest, always on SSR
+//   3. __NEXT_DATA__ hydration JSON — when available (increasingly rare)
+//   4. DOM scraping with data-testid — fallback for SPA navigation
 //
 // Page types:
 //   - Profile:  x.com/username or twitter.com/username
@@ -334,9 +335,38 @@ function extractPostId() {
   return m ? m[1] : null;
 }
 
+// ─── MAIN World Intercept Data (via postMessage bridge) ──────────────
+// Reads data captured by twitter-video-intercept.js (MAIN world).
+// Uses postMessage because MAIN and ISOLATED worlds can't share globals.
+
+async function readInterceptData() {
+  const requestId = `nas_tw_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      window.removeEventListener("message", handler);
+      resolve(null); // No data — intercept may not be active yet
+    }, 2000);
+
+    function handler(event) {
+      if (event.source !== window) return;
+      const msg = event.data;
+      if (msg?.type !== "NAS_TWITTER_DATA_RESPONSE") return;
+      if (msg.requestId !== requestId) return;
+
+      clearTimeout(timeout);
+      window.removeEventListener("message", handler);
+      resolve(msg.data || null);
+    }
+
+    window.addEventListener("message", handler);
+    window.postMessage({ type: "NAS_TWITTER_GET_DATA", requestId }, "*");
+  });
+}
+
 // ─── Main Analyzer ───────────────────────────────────────────────────
 
-function analyzeTwitter() {
+async function analyzeTwitter() {
   const pageType = detectPageType();
   const result = {
     platform: "twitter",
@@ -350,6 +380,62 @@ function analyzeTwitter() {
   const meta = extractMetaData();
   const hydration = parseHydrationData();
   const dom = extractFromDOM();
+
+  // ── Read intercepted API data (from MAIN world) ──
+  const intercepted = await readInterceptData();
+
+  // Merge intercepted user data into hydration results
+  if (intercepted?.users) {
+    for (const [screenName, user] of Object.entries(intercepted.users)) {
+      if (!hydration.user && user.screenName) {
+        hydration.user = {
+          name: user.name,
+          screenName: user.screenName,
+          profilePic: upgradeImageUrl(user.profilePic),
+          banner: user.banner,
+          bio: user.bio,
+          followers: user.followers || 0,
+          following: user.following || 0,
+          verified: user.verified || false,
+          id: user.id,
+        };
+      }
+    }
+  }
+
+  // Merge intercepted video data
+  if (intercepted?.videos) {
+    for (const [key, video] of Object.entries(intercepted.videos)) {
+      if (!video.url) continue;
+      if (!hydration.videos.some((v) => v.url === video.url)) {
+        hydration.videos.push({
+          url: video.url,
+          thumbnail: video.thumbnail ? upgradeImageUrl(video.thumbnail) : null,
+          width: video.width || 0,
+          height: video.height || 0,
+          bitrate: video.bitrate || 0,
+          id: video.id || key,
+          type: video.type || "video",
+        });
+      }
+    }
+  }
+
+  // Merge intercepted image data
+  if (intercepted?.images) {
+    for (const [key, img] of Object.entries(intercepted.images)) {
+      if (!img.url) continue;
+      if (!hydration.images.some((i) => i.url === img.url)) {
+        hydration.images.push({
+          url: img.url,
+          width: img.width || 0,
+          height: img.height || 0,
+          alt: img.alt || "",
+          id: img.id || key,
+        });
+      }
+    }
+  }
 
   // Build platform metadata (merge all sources)
   result.platformMeta = {
@@ -529,14 +615,13 @@ function analyzeTwitter() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "analyzePlatform") {
-    try {
-      const result = analyzeTwitter();
-      sendResponse(result);
-    } catch (err) {
-      console.error("NAS Twitter script error:", err);
-      sendResponse({ platform: "twitter", error: err.message });
-    }
-    return false; // Synchronous
+    analyzeTwitter()
+      .then((result) => sendResponse(result))
+      .catch((err) => {
+        console.error("NAS Twitter script error:", err);
+        sendResponse({ platform: "twitter", error: err.message });
+      });
+    return true; // Async — waiting for intercept data
   }
 
   if (message.action === "deepScanPlatform") {
@@ -583,7 +668,7 @@ async function deepScanTwitter() {
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  return analyzeTwitter();
+  return await analyzeTwitter();
 }
 
 } // end duplicate injection guard

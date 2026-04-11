@@ -7,9 +7,10 @@
 //   - Page metadata (name, about, category, follower counts)
 //
 // Data sources (priority order):
-//   1. OG meta tags — fastest, always present on initial page load
-//   2. data-sjs Relay script tags — richest data, contains GraphQL prefetch
-//   3. DOM scraping with aria-labels — fallback for SPA-navigated pages
+//   1. MAIN world API intercept (facebook-video-intercept.js) — richest, captures GraphQL
+//   2. OG meta tags — fastest, always present on initial page load
+//   3. data-sjs Relay script tags — contains GraphQL prefetch
+//   4. DOM scraping with aria-labels — fallback for SPA-navigated pages
 //
 // Page types:
 //   - Page:    facebook.com/pagename or facebook.com/ID
@@ -295,9 +296,38 @@ function extractUsername() {
   return null;
 }
 
+// ─── MAIN World Intercept Data (via postMessage bridge) ──────────────
+// Reads data captured by facebook-video-intercept.js (MAIN world).
+// Uses postMessage because MAIN and ISOLATED worlds can't share globals.
+
+async function readInterceptData() {
+  const requestId = `nas_fb_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      window.removeEventListener("message", handler);
+      resolve(null);
+    }, 2000);
+
+    function handler(event) {
+      if (event.source !== window) return;
+      const msg = event.data;
+      if (msg?.type !== "NAS_FACEBOOK_DATA_RESPONSE") return;
+      if (msg.requestId !== requestId) return;
+
+      clearTimeout(timeout);
+      window.removeEventListener("message", handler);
+      resolve(msg.data || null);
+    }
+
+    window.addEventListener("message", handler);
+    window.postMessage({ type: "NAS_FACEBOOK_GET_DATA", requestId }, "*");
+  });
+}
+
 // ─── Main Analyzer ───────────────────────────────────────────────────
 
-function analyzeFacebook() {
+async function analyzeFacebook() {
   const pageType = detectPageType();
   const result = {
     platform: "facebook",
@@ -310,6 +340,59 @@ function analyzeFacebook() {
   const meta = extractMetaData();
   const relay = parseRelayData();
   const dom = extractFromDOM();
+
+  // ── Read intercepted API data (from MAIN world) ──
+  const intercepted = await readInterceptData();
+
+  // Merge intercepted video data into relay results
+  if (intercepted?.videos) {
+    for (const [id, video] of Object.entries(intercepted.videos)) {
+      if (!video.url) continue;
+      if (!relay.videos.some((v) => v.url === video.url)) {
+        relay.videos.push({
+          url: video.hdUrl || video.url,
+          sdUrl: video.sdUrl || null,
+          hdUrl: video.hdUrl || null,
+          id: video.id || id,
+          title: video.title || null,
+          description: video.description || null,
+          width: video.width || 0,
+          height: video.height || 0,
+          duration: video.duration || 0,
+          thumbnail: video.thumbnail || null,
+        });
+      }
+    }
+  }
+
+  // Merge intercepted user/page data
+  if (intercepted?.users) {
+    for (const [key, user] of Object.entries(intercepted.users)) {
+      if (!relay.pageData && user.name) {
+        relay.pageData = {
+          name: user.name,
+          category: user.category || null,
+          about: user.about || null,
+          website: user.website || null,
+          followers: user.followers || 0,
+          verified: user.verified || false,
+          id: user.id || null,
+        };
+      }
+    }
+  }
+
+  // Merge intercepted image data (profile pics, cover photos)
+  if (intercepted?.images) {
+    const profilePic = intercepted.images.profilePic;
+    if (profilePic?.url && !relay.profilePic) {
+      relay.profilePic = profilePic.url;
+    }
+    const coverPhoto = intercepted.images.coverPhoto;
+    if (coverPhoto?.url && !relay.coverPhoto) {
+      relay.coverPhoto = coverPhoto.url;
+    }
+  }
 
   // Build platform metadata (merge all sources)
   result.platformMeta = {
@@ -443,14 +526,13 @@ function analyzeFacebook() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "analyzePlatform") {
-    try {
-      const result = analyzeFacebook();
-      sendResponse(result);
-    } catch (err) {
-      console.error("NAS Facebook script error:", err);
-      sendResponse({ platform: "facebook", error: err.message });
-    }
-    return false; // Synchronous — DOM/JSON parsing is instant
+    analyzeFacebook()
+      .then((result) => sendResponse(result))
+      .catch((err) => {
+        console.error("NAS Facebook script error:", err);
+        sendResponse({ platform: "facebook", error: err.message });
+      });
+    return true; // Async — waiting for intercept data
   }
 
   if (message.action === "deepScanPlatform") {
@@ -496,7 +578,7 @@ async function deepScanFacebook() {
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  return analyzeFacebook();
+  return await analyzeFacebook();
 }
 
 } // end duplicate injection guard
