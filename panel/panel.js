@@ -1029,8 +1029,13 @@ async function downloadKit() {
     let totalBytes = 0;
 
     // Update progress UI
-    function updateProgress() {
-      const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+    function updateProgress(subPercent) {
+      // subPercent (0-100) interpolates between completed/total and (completed+1)/total
+      // for smooth feedback during long transcode/mux operations
+      const basePct = total > 0 ? (completed / total) * 100 : 0;
+      const slicePct = total > 0 ? (1 / total) * 100 : 0;
+      const sub = typeof subPercent === "number" ? Math.min(subPercent, 100) : 0;
+      const pct = Math.round(basePct + slicePct * (sub / 100));
       progressFill.style.width = `${pct}%`;
       const sizeStr = totalBytes > 0 ? ` · ${formatBytes(totalBytes)}` : "";
       progressText.textContent = `${completed} / ${total}${sizeStr}`;
@@ -1079,6 +1084,7 @@ async function downloadKit() {
 
             // 1. Fetch video buffer
             progressText.textContent = `Fetching video ${vidLabel}…`;
+            updateProgress(5);
             const vidResult = await chrome.tabs.sendMessage(tab.id, {
               action: "fetchBlob",
               url: asset.url,
@@ -1088,6 +1094,7 @@ async function downloadKit() {
 
             // 2. Fetch audio buffer
             progressText.textContent = `Fetching audio ${vidLabel}…`;
+            updateProgress(15);
             const audResult = await chrome.tabs.sendMessage(tab.id, {
               action: "fetchBlob",
               url: asset.audioUrl,
@@ -1101,6 +1108,7 @@ async function downloadKit() {
                 progressText.textContent = `Transcoding ${vidLabel}…`;
                 videoBuffer = await VideoPipeline.transcode(videoBuffer, ({ percent, detail }) => {
                   progressText.textContent = `Transcoding ${vidLabel}: ${detail || percent + "%"}`;
+                  updateProgress(20 + (percent * 0.6)); // 20-80% of sub-progress
                 });
                 console.log(`[downloadKit] Transcoded ${vidLabel} VP9 → H.264`);
               } catch (err) {
@@ -1115,6 +1123,7 @@ async function downloadKit() {
             try {
               blob = await VideoPipeline.mux(videoBuffer, audioBuffer, ({ percent, detail }) => {
                 progressText.textContent = `Muxing ${vidLabel}: ${detail || percent + "%"}`;
+                updateProgress(80 + (percent * 0.2)); // 80-100% of sub-progress
               });
               wasMuxed = true;
               console.log(`[downloadKit] Muxed ${vidLabel}: ${(blob.size / 1024 / 1024).toFixed(1)} MB`);
@@ -1314,6 +1323,13 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
+function formatCount(n) {
+  if (!n || n <= 0) return "0";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "K";
+  return String(n);
+}
+
 /**
  * Check if a video blob is a complete, playable file (not a DASH/HLS fragment).
  * Reads the first 8 bytes and checks for MP4 box types:
@@ -1403,6 +1419,45 @@ function renderPlatformMeta(meta, platform) {
     if (meta.isCarousel) platformRows.push({ label: "carousel", value: "swipe for more slides" });
     if (meta.author) platformRows.push({ label: "author", value: `@${meta.author}` });
     if (meta.caption) platformRows.push({ label: "caption", value: meta.caption.slice(0, 120) + (meta.caption.length > 120 ? "…" : "") });
+  }
+
+  if (platform === "twitter") {
+    if (meta.username) platformRows.push({ label: "user", value: `@${meta.username}` });
+    if (meta.name) platformRows.push({ label: "name", value: meta.name });
+    if (meta.bio) platformRows.push({ label: "bio", value: meta.bio.slice(0, 120) + (meta.bio.length > 120 ? "…" : "") });
+    if (meta.followers) platformRows.push({ label: "followers", value: formatCount(meta.followers) });
+    if (meta.following) platformRows.push({ label: "following", value: formatCount(meta.following) });
+    if (meta.verified) platformRows.push({ label: "verified", value: "✓" });
+  }
+
+  if (platform === "youtube") {
+    if (meta.username) platformRows.push({ label: "channel", value: `@${meta.username}` });
+    if (meta.name) platformRows.push({ label: "name", value: meta.name });
+    if (meta.subscribers) platformRows.push({ label: "subscribers", value: meta.subscribers });
+  }
+
+  if (platform === "tiktok") {
+    if (meta.username) platformRows.push({ label: "user", value: `@${meta.username}` });
+    if (meta.displayName) platformRows.push({ label: "name", value: meta.displayName });
+    if (meta.bio) platformRows.push({ label: "bio", value: meta.bio.slice(0, 120) + (meta.bio.length > 120 ? "…" : "") });
+    if (meta.verified) platformRows.push({ label: "verified", value: "✓" });
+    if (meta.stats?.followers) platformRows.push({ label: "followers", value: formatCount(meta.stats.followers) });
+    if (meta.stats?.likes) platformRows.push({ label: "likes", value: formatCount(meta.stats.likes) });
+  }
+
+  if (platform === "vimeo") {
+    if (meta.username) platformRows.push({ label: "user", value: meta.username });
+    if (meta.name) platformRows.push({ label: "name", value: meta.name });
+  }
+
+  if (platform === "facebook") {
+    if (meta.username) platformRows.push({ label: "user", value: meta.username });
+    if (meta.name) platformRows.push({ label: "name", value: meta.name });
+    if (meta.category) platformRows.push({ label: "category", value: meta.category });
+    if (meta.about) platformRows.push({ label: "about", value: meta.about.slice(0, 120) + (meta.about.length > 120 ? "…" : "") });
+    if (meta.website) platformRows.push({ label: "website", value: meta.website });
+    if (meta.followers) platformRows.push({ label: "followers", value: formatCount(meta.followers) });
+    if (meta.verified) platformRows.push({ label: "verified", value: "✓" });
   }
 
   for (const row of platformRows) {
