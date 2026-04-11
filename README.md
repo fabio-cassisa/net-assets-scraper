@@ -152,7 +152,7 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 
 ## status
 
-🟢 **v2.2 — drop 2 complete**. social media mode — 6 platforms with MAIN world API interception.
+🟢 **v2.3 — phase B polish complete**. smart naming, audit fixes, platform metadata, smooth progress.
 
 - [x] passive network capture via `webRequest`
 - [x] smart brand color extraction (CSS vars → meta → DOM frequency)
@@ -167,10 +167,15 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 - [x] facebook — GraphQL intercept, multi-line JSON parsing, images working
 - [x] youtube — thumbnails, channel art, avatars (no video by design)
 - [x] vimeo — progressive H.264 MP4 via config API intercept
+- [x] smart asset naming (`@username-platform-context-WxH.ext`)
+- [x] platform metadata display (user, bio, followers, verified) for all 6 platforms
+- [x] smooth progress bar during VP9→H.264 transcode/mux pipeline
+- [x] failed download tracking (toast shows actual success/failure count)
+- [x] ghost image filtering (`%22` phantom URLs from SPA DOMs)
+- [x] twitter SPA stale data fix (hydration validation against URL)
 
-**next — polish phase:**
+**next — backlog:**
 
-- [ ] smart asset naming (`@username-platform-context.ext`)
 - [ ] smarter deep scan (faster, configurable depth, progress indicator)
 - [ ] facebook video improvement (scroll-triggered video API capture)
 - [ ] quick presets (brand kit / media pack / everything)
@@ -178,6 +183,7 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 - [ ] image compression toggle (stay under 3.8MB for suite templates)
 - [ ] selective brand download (make brand items opt-in)
 - [ ] lazy rendering for 100+ cards
+- [ ] base64 memory optimization (streaming fetch instead of data URLs)
 
 **planned — drop 3:**
 
@@ -187,7 +193,8 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 
 ## versioning
 
-- `v2.2` — current. social media mode complete — 6 platforms with MAIN world API interception.
+- `v2.3` — current. phase B polish — smart naming, platform metadata, progress bar, audit fixes.
+- `v2.2` — social media mode complete — 6 platforms with MAIN world API interception.
 - `v2.1` — instagram video pipeline (VP9→H.264 transcode + mux).
 - `v2.0` — core rebuild with smart extraction.
 - `v1.0` — original network capture version.
