@@ -49,6 +49,11 @@
       "matches": ["*://*.tiktok.com/*"],
       "js": ["platforms/tiktok.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.facebook.com/*"],
+      "js": ["platforms/facebook.js"],
+      "run_at": "document_idle"
     }
   ]
 }
