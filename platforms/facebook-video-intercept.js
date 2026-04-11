@@ -58,7 +58,7 @@
       return;
     }
 
-    // Video objects — look for playable_url fields
+    // Video objects — legacy format (playable_url fields)
     if (obj.playable_url || obj.playable_url_quality_hd || obj.browser_native_hd_url) {
       const url = obj.playable_url_quality_hd || obj.browser_native_hd_url
         || obj.playable_url || obj.browser_native_sd_url || null;
@@ -77,7 +77,41 @@
           description: obj.description?.text || null,
           id: obj.id || obj.video_id || null,
         });
-        console.log(`[NAS Facebook intercept] Captured video ${id} (${obj.width || "?"}x${obj.height || "?"})`);
+        console.log(`[NAS Facebook intercept] Captured video ${id} (${obj.width || "?"}x${obj.height || "?"}) [legacy]`);
+      }
+    }
+
+    // Video objects — new format (videoDeliveryResponseFragment with progressive_urls)
+    // Facebook now wraps video delivery in: media.videoDeliveryResponseFragment.videoDeliveryResponseResult.progressive_urls[]
+    // The parent object with __typename === "Video" holds metadata (id, width, height, thumbnail, owner).
+    if (obj.__typename === "Video" && obj.videoDeliveryResponseFragment) {
+      const delivery = obj.videoDeliveryResponseFragment?.videoDeliveryResponseResult;
+      const progs = delivery?.progressive_urls;
+      if (progs && progs.length > 0) {
+        const id = obj.id || obj.video_id;
+        if (id && !store.videos.has(id)) {
+          // Pick HD first, fall back to SD
+          const hd = progs.find((p) => p.metadata?.quality === "HD");
+          const sd = progs.find((p) => p.metadata?.quality === "SD");
+          const best = hd || sd || progs[0];
+          const url = best?.progressive_url;
+
+          if (url) {
+            store.videos.set(id, {
+              url,
+              hdUrl: hd?.progressive_url || null,
+              sdUrl: sd?.progressive_url || null,
+              width: obj.width || 0,
+              height: obj.height || 0,
+              duration: obj.length_in_second || (obj.playable_duration_in_ms ? obj.playable_duration_in_ms / 1000 : 0),
+              thumbnail: obj.preferred_thumbnail?.image?.uri || obj.first_frame_thumbnail || null,
+              title: obj.title?.text || obj.title || null,
+              description: obj.description?.text || null,
+              id,
+            });
+            console.log(`[NAS Facebook intercept] Captured video ${id} (${obj.width || "?"}x${obj.height || "?"}) [progressive]`);
+          }
+        }
       }
     }
 
