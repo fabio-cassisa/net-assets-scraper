@@ -1218,8 +1218,18 @@ async function downloadKit() {
 
     // Generate zip
     const content = await zip.generateAsync({ type: "blob" });
-    const hostname = document.getElementById("siteName").textContent.replace(/[^a-z0-9.-]/gi, "_");
-    const zipName = `${hostname || "assets"}_brand_kit.zip`;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const metaUser = platformData?.platformMeta?.username;
+    let zipName;
+    if (detectedPlatform && metaUser) {
+      zipName = `@${metaUser}-${detectedPlatform}-assets-${dateStr}.zip`;
+    } else if (detectedPlatform) {
+      zipName = `${detectedPlatform}-assets-${dateStr}.zip`;
+    } else {
+      const hostname = document.getElementById("siteName").textContent.replace(/[^a-z0-9.-]/gi, "_");
+      zipName = `${hostname || "assets"}-brand-kit-${dateStr}.zip`;
+    }
+    zipName = sanitizeFilename(zipName);
 
     // Download
     const blobUrl = URL.createObjectURL(content);
@@ -1251,34 +1261,32 @@ function getActualExtension(asset, blobType) {
 }
 
 function buildFinalFilename(asset, ext) {
-  // Platform-aware naming: use username + shortcode when available
-  // Produces: nike_DI3xK2_1080x1350.mp4 instead of api-capture-mnu0xahl.mp4
-  if (asset.username || asset.shortcode) {
+  // ── Smart naming: @username-platformTag-WxH.ext ──────────────────
+  // Tier 1: Platform asset with username → @nike-twitter-banner-1500x500.jpg
+  // Tier 2: Platform asset, no username  → twitter-banner-1500x500.jpg
+  // Tier 3: Non-platform asset           → alt text / URL-derived fallback
+  const e = ext || guessExt(asset);
+
+  if (asset.platformTag) {
     const parts = [];
-    if (asset.username) parts.push(asset.username);
-    if (asset.shortcode) parts.push(asset.shortcode);
-    // Append dimensions if known (helps identify quality at a glance)
+    if (asset.username) parts.push(`@${asset.username}`);
+    parts.push(asset.platformTag);
+    // Append dimensions when known (useful for picking the right size)
     const w = asset.domWidth || 0;
     const h = asset.domHeight || 0;
     if (w > 0 && h > 0) parts.push(`${w}x${h}`);
-    const name = parts.join("_") + "." + (ext || "mp4");
-    return sanitizeFilename(name);
+    return sanitizeFilename(parts.join("-") + "." + e);
   }
 
+  // Non-platform: fall back to display name with corrected extension
   let name = asset.displayName;
-
-  // Make sure extension matches actual detected type
   const dotIdx = name.lastIndexOf(".");
   if (dotIdx > 0) {
     const currentExt = name.substring(dotIdx + 1).toLowerCase();
-    // If current extension doesn't match, replace it
-    if (currentExt !== ext && ext) {
-      name = name.substring(0, dotIdx) + "." + ext;
-    }
-  } else if (ext) {
-    name = name + "." + ext;
+    if (currentExt !== e && e) name = name.substring(0, dotIdx) + "." + e;
+  } else if (e) {
+    name = name + "." + e;
   }
-
   return sanitizeFilename(name);
 }
 
