@@ -594,17 +594,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 /**
  * Fetch a blob URL from the MAIN world where the page's full cookie jar
  * and origin context are available. Uses postMessage bridge on platforms
- * that have MAIN world intercept scripts (which provide the NAS_MAIN_FETCH handler).
+ * that have MAIN world intercept scripts AND require cookies for CDN fetches.
+ * Vimeo progressive URLs are token-signed (no cookies needed) so they
+ * go direct — avoids base64 memory bomb on large video files.
  * All other platforms go straight to fetchBlobDirect().
  */
 async function fetchBlobViaMainWorld(url) {
-  // Platforms with MAIN world fetch handlers
+  // Platforms that need MAIN world cookies for CDN video fetches
   const host = window.location.hostname;
   const hasMainWorldHandler = host.includes("tiktok.com")
     || host.includes("twitter.com")
     || host.includes("x.com")
-    || host.includes("facebook.com")
-    || host.includes("vimeo.com");
+    || host.includes("facebook.com");
+  // NOTE: Vimeo excluded — progressive CDN URLs are self-authenticated (token in URL)
 
   if (!hasMainWorldHandler) return fetchBlobDirect(url);
 
