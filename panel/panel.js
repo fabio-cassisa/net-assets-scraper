@@ -229,6 +229,8 @@ function enrichAssets(networkResources, imageContext, platformResult) {
     if (isStreamingPlatform && r.type === "video") return false;
     // On all sites, drop URLs that match fragment patterns
     if (r.type === "video" && VIDEO_FRAGMENT_PATTERNS.test(r.url)) return false;
+    // Filter out malformed URLs with encoded quotes (%22) — phantom DOM entries
+    if (r.url.includes('%22')) return false;
     return true;
   });
 
@@ -1023,6 +1025,7 @@ async function downloadKit() {
     const usedNames = new Map(); // folder → Set<name>
 
     let completed = 0;
+    let failed = 0;
     let totalBytes = 0;
 
     // Update progress UI
@@ -1178,6 +1181,7 @@ async function downloadKit() {
         updateProgress();
       } catch (err) {
         console.error(`Failed to fetch ${asset.url}:`, err);
+        failed++;
         completed++;
         updateProgress();
       }
@@ -1241,7 +1245,9 @@ async function downloadKit() {
       URL.revokeObjectURL(blobUrl);
     });
 
-    showToast(`Kit downloaded — ${completed} files · ${formatBytes(totalBytes)}`);
+    const succeeded = completed - failed;
+    const failedNote = failed > 0 ? ` (${failed} failed)` : "";
+    showToast(`Kit downloaded — ${succeeded} files · ${formatBytes(totalBytes)}${failedNote}`);
   } catch (err) {
     console.error("Kit generation failed:", err);
     showToast("Download failed. Check console.");

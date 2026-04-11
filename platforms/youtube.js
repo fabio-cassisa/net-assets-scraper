@@ -400,7 +400,7 @@ function analyzeYouTube() {
   }
 
   // ── Current video thumbnail (watch/shorts page) ──
-  if (videoId && pageType === "video" || pageType === "shorts") {
+  if (videoId && (pageType === "video" || pageType === "shorts")) {
     const maxThumb = getMaxThumbnail(videoId);
     const hqThumb = getHqThumbnail(videoId);
     const seenUrls = new Set(result.assets.map((a) => a.url));

@@ -102,6 +102,16 @@ function detectPageType() {
   return "other";
 }
 
+// Extract username from URL path — works for profile (/username/) and stories (/stories/username/)
+function extractUsernameFromUrl() {
+  const path = window.location.pathname;
+  const storiesMatch = path.match(/^\/stories\/([\w.]+)\/?/);
+  if (storiesMatch) return storiesMatch[1];
+  const profileMatch = path.match(/^\/([\w.]+)\/?$/);
+  if (profileMatch) return profileMatch[1];
+  return null;
+}
+
 // ─── Profile Page Extraction ─────────────────────────────────────────
 
 function extractProfileData() {
@@ -604,6 +614,7 @@ function analyzeInstagram() {
 
   if (pageType === "profile") {
     const profile = extractProfileData();
+    const resolvedUsername = profile.username || "";
     result.platformMeta = {
       username: profile.username,
       fullName: profile.fullName,
@@ -623,6 +634,7 @@ function analyzeInstagram() {
         width: 0,
         height: 0,
         platformTag: "instagram-profile-pic",
+        username: resolvedUsername,
       });
     }
 
@@ -639,12 +651,14 @@ function analyzeInstagram() {
         height: post.height,
         platformTag: post.type === "reel-thumb" ? "instagram-reel-thumb" : "instagram-post",
         postUrl: post.postUrl,
+        username: resolvedUsername,
       });
     }
   }
 
   if (pageType === "post") {
     const post = extractPostData();
+    const resolvedUsername = post.author || "";
     result.platformMeta = {
       author: post.author,
       caption: post.caption,
@@ -662,6 +676,7 @@ function analyzeInstagram() {
         width: img.width,
         height: img.height,
         platformTag: "instagram-post-image",
+        username: resolvedUsername,
       });
     }
 
@@ -677,12 +692,14 @@ function analyzeInstagram() {
         height: video.height,
         platformTag: "instagram-post-video",
         poster: video.poster,
+        username: resolvedUsername,
       });
     }
   }
 
   if (pageType === "reel") {
     const reel = extractReelData();
+    const resolvedUsername = reel.author || "";
     result.platformMeta = { author: reel.author };
 
     for (const video of reel.videos) {
@@ -698,6 +715,7 @@ function analyzeInstagram() {
         platformTag: "instagram-reel",
         poster: video.poster,
         isBlob: video.isBlob || false,
+        username: resolvedUsername,
       });
     }
 
@@ -712,12 +730,14 @@ function analyzeInstagram() {
         width: 0,
         height: 0,
         platformTag: "instagram-reel-poster",
+        username: resolvedUsername,
       });
     }
   }
 
   if (pageType === "stories") {
     const stories = extractStoriesData();
+    const resolvedUsername = extractUsernameFromUrl() || "";
 
     for (const img of stories.images) {
       result.assets.push({
@@ -730,6 +750,7 @@ function analyzeInstagram() {
         width: img.width,
         height: img.height,
         platformTag: "instagram-story",
+        username: resolvedUsername,
       });
     }
 
@@ -746,6 +767,7 @@ function analyzeInstagram() {
         platformTag: "instagram-story-video",
         poster: video.poster,
         isBlob: video.isBlob || false,
+        username: resolvedUsername,
       });
     }
   }
