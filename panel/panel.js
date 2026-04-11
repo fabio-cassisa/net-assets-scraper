@@ -974,6 +974,20 @@ async function dataUrlToArrayBuffer(dataUrl) {
   return res.arrayBuffer();
 }
 
+/**
+ * Check if a platform video URL can be fetched directly from the panel
+ * (no content-script proxy needed). True for CDN URLs that are
+ * self-authenticated via tokens in the URL — no cookies required.
+ */
+function isDirectFetchableVideo(asset) {
+  if (!asset.url) return false;
+  // Vimeo progressive MP4s — token-signed, publicly accessible
+  if (asset.platformTag?.startsWith("vimeo-") && /akamaized\.net|vimeocdn\.com/.test(asset.url)) {
+    return true;
+  }
+  return false;
+}
+
 function initDownload() {
   document.getElementById("downloadBtn").addEventListener("click", downloadKit);
 }
@@ -1108,10 +1122,12 @@ async function downloadKit() {
             lock.release(); // let next video proceed
           }
 
-        } else if (asset.url.startsWith("blob:") || (asset.type === "video" && asset.platformTag)) {
+        } else if (asset.url.startsWith("blob:") || (asset.type === "video" && asset.platformTag && !isDirectFetchableVideo(asset))) {
           // Blob URLs and platform video CDN URLs must be fetched from the
           // PAGE context (content script) — the extension panel can't access
           // Instagram/TikTok CDN due to CORS and missing auth cookies.
+          // Exception: Vimeo progressive URLs are self-authenticated (token in URL)
+          // and can be fetched directly from the panel.
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
           const result = await chrome.tabs.sendMessage(tab.id, {
             action: "fetchBlob",
