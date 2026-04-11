@@ -59,7 +59,7 @@ const PLATFORM_SCRIPTS = {
   tiktok: "platforms/tiktok.js",
   facebook: "platforms/facebook.js",
   twitter: "platforms/twitter.js",
-  // Future: youtube
+  youtube: "platforms/youtube.js",
 };
 
 function detectPlatform(url) {
@@ -211,7 +211,7 @@ function enrichAssets(networkResources, imageContext, platformResult) {
   // captures complete video CDN URLs from API responses instead.
   // Use detectedPlatform (URL-based, always set) as fallback when platformResult
   // is null (e.g. deepScanPlatform timed out or the message channel closed).
-  const streamingPlatforms = ["instagram", "tiktok", "facebook", "twitter"];
+  const streamingPlatforms = ["instagram", "tiktok", "facebook", "twitter", "youtube"];
   const platformName = platformResult?.platform || detectedPlatform;
   const isStreamingPlatform = platformName && streamingPlatforms.includes(platformName);
 

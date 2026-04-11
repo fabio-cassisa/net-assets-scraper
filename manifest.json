@@ -59,6 +59,11 @@
       "matches": ["*://*.twitter.com/*", "*://*.x.com/*"],
       "js": ["platforms/twitter.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["platforms/youtube.js"],
+      "run_at": "document_idle"
     }
   ]
 }
