@@ -31,6 +31,15 @@
     </div>
   </header>
 
+  <!-- Feed Page Warning (hidden by default) -->
+  <div class="feed-warning" id="feedWarning" style="display: none;">
+    <div class="feed-warning-content">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <span id="feedWarningText">Feed page — mixed content from multiple accounts. Navigate to a profile or post for best results.</span>
+    </div>
+    <button class="feed-warning-close" id="feedWarningClose" title="Dismiss">✕</button>
+  </div>
+
   <!-- Filter Chips -->
   <nav class="filter-bar" id="tabNav">
     <button class="filter-chip active" data-tab="all">
@@ -81,6 +90,13 @@
       </div>
       <p>Browse a page to capture assets.</p>
       <p class="hint">Assets appear here as the page loads.</p>
+    </div>
+    <!-- Render overlay — blocks interaction during batch grid render -->
+    <div class="render-overlay" id="renderOverlay" style="display: none;">
+      <div class="render-overlay-inner">
+        <div class="render-spinner"></div>
+        <span>Rendering assets…</span>
+      </div>
     </div>
   </main>
 

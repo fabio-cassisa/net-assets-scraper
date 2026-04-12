@@ -235,6 +235,51 @@ body {
   color: var(--accent);
 }
 
+/* ─── Feed Page Warning Banner ────────────────────────────────────── */
+.feed-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 0;
+  background: rgba(255, 196, 107, 0.08);
+  border-bottom: 1px solid rgba(255, 196, 107, 0.2);
+}
+
+.feed-warning-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--warning);
+  line-height: 1.4;
+}
+
+.feed-warning-content svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--warning);
+}
+
+.feed-warning-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.feed-warning-close:hover {
+  color: var(--warning);
+  background: rgba(255, 196, 107, 0.12);
+}
+
 /* Scan progress bar — in header, below site name */
 .scan-progress {
   display: flex;
@@ -807,11 +852,57 @@ video.card-thumb {
   box-shadow: 0 0 8px rgba(255, 110, 156, 0.4);
 }
 
+/* Pulsing state for indeterminate progress (zipping phase) */
+.progress-fill.pulsing {
+  animation: pulse-bar 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-bar {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .progress-text {
   font-size: 10px;
   font-family: var(--font-mono);
   color: var(--text-secondary);
   white-space: nowrap;
+}
+
+/* ─── Download-active lock ─────────────────────────────────────────── */
+/* While a download is running, disable all interaction except the progress bar */
+body.downloading .filter-bar,
+body.downloading .controls-bar,
+body.downloading .asset-grid,
+body.downloading .feed-warning,
+body.downloading .scan-chip {
+  pointer-events: none;
+  opacity: 0.45;
+  transition: opacity 0.2s ease;
+}
+
+/* Keep download bar fully interactive */
+body.downloading .download-bar {
+  pointer-events: all;
+  opacity: 1;
+}
+
+/* ─── Scan-active lock ────────────────────────────────────────────── */
+/* While scanning, dim and disable everything below the header/scan bar */
+body.scanning .filter-bar,
+body.scanning .controls-bar,
+body.scanning .asset-grid,
+body.scanning .feed-warning,
+body.scanning .download-bar {
+  pointer-events: none;
+  opacity: 0.45;
+  transition: opacity 0.2s ease;
+}
+
+/* Keep scan progress and header interactive during scan */
+body.scanning .scan-chip {
+  pointer-events: all;
+  opacity: 1;
 }
 
 /* ─── Toast ───────────────────────────────────────────────────────── */
@@ -850,4 +941,46 @@ video.card-thumb {
 @keyframes shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+/* ─── Render Overlay ──────────────────────────────────────────────── */
+/* Blocks interaction during batch grid rendering to prevent misclicks */
+.render-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 14, 23, 0.7);
+  backdrop-filter: blur(2px);
+  pointer-events: all;
+  grid-column: 1 / -1;
+}
+
+.render-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.render-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-light);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Grid needs position: relative for the overlay to anchor to */
+.asset-grid {
+  position: relative;
 }

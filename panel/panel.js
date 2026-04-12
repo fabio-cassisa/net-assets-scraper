@@ -65,6 +65,13 @@ const PLATFORM_SCRIPTS = {
   vimeo: "platforms/vimeo.js",
 };
 
+// Page types that are feed/discovery pages (not single-entity targets)
+const FEED_PAGE_TYPES = new Set([
+  "home", "explore", "search", "list",  // Twitter
+  "feed", "discover",                     // TikTok FYP + discover
+  // Facebook "home" is already covered by "home"
+]);
+
 function detectPlatform(url) {
   if (!url) return null;
   for (const [platform, pattern] of Object.entries(PLATFORM_PATTERNS)) {
@@ -78,6 +85,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initTabNav();
   initControls();
   initDownload();
+  initFeedWarning();
   scanCurrentTab();
 });
 
@@ -141,6 +149,9 @@ async function scanCurrentTab() {
   if (platformData?.platformMeta) {
     renderPlatformMeta(platformData.platformMeta, detectedPlatform);
   }
+
+  // Check for feed page warning
+  checkFeedWarning();
 }
 
 // ─── Content script communication (with auto-inject fallback) ────────
@@ -418,28 +429,78 @@ function sanitizeFilename(name) {
 // ─── Render Grid ─────────────────────────────────────────────────────
 // Cached reference — survives grid.innerHTML = "" clears
 let emptyStateEl = null;
+let renderOverlayEl = null;
+const RENDER_BATCH_SIZE = 20; // Cards per animation frame
 
 function renderGrid() {
   const grid = document.getElementById("assetGrid");
   if (!emptyStateEl) emptyStateEl = document.getElementById("emptyState");
+  if (!renderOverlayEl) renderOverlayEl = document.getElementById("renderOverlay");
   const filtered = getFilteredAssets();
+
+  // Cancel any in-progress batch render
+  if (window.__nasRenderBatchId) {
+    cancelAnimationFrame(window.__nasRenderBatchId);
+    window.__nasRenderBatchId = null;
+  }
 
   if (filtered.length === 0) {
     grid.innerHTML = "";
     grid.appendChild(emptyStateEl);
     emptyStateEl.style.display = "flex";
+    if (renderOverlayEl) {
+      renderOverlayEl.style.display = "none";
+      grid.appendChild(renderOverlayEl);
+    }
     return;
   }
 
   emptyStateEl.style.display = "none";
   // Detach empty state before clearing so it survives
   if (emptyStateEl.parentNode === grid) grid.removeChild(emptyStateEl);
+  // Detach overlay before clearing
+  if (renderOverlayEl && renderOverlayEl.parentNode === grid) grid.removeChild(renderOverlayEl);
   grid.innerHTML = "";
 
-  for (const asset of filtered) {
-    const card = createAssetCard(asset);
-    grid.appendChild(card);
+  // For small sets, render synchronously (no jank to worry about)
+  if (filtered.length <= RENDER_BATCH_SIZE) {
+    for (const asset of filtered) {
+      grid.appendChild(createAssetCard(asset));
+    }
+    return;
   }
+
+  // Large set — batch render with overlay to block interaction
+  if (renderOverlayEl) {
+    grid.appendChild(renderOverlayEl);
+    renderOverlayEl.style.display = "flex";
+  }
+
+  let i = 0;
+  function renderBatch() {
+    const end = Math.min(i + RENDER_BATCH_SIZE, filtered.length);
+    // Use DocumentFragment for minimal reflows per batch
+    const fragment = document.createDocumentFragment();
+    for (; i < end; i++) {
+      fragment.appendChild(createAssetCard(filtered[i]));
+    }
+    // Insert before overlay so overlay stays on top visually
+    if (renderOverlayEl && renderOverlayEl.parentNode === grid) {
+      grid.insertBefore(fragment, renderOverlayEl);
+    } else {
+      grid.appendChild(fragment);
+    }
+
+    if (i < filtered.length) {
+      window.__nasRenderBatchId = requestAnimationFrame(renderBatch);
+    } else {
+      // Done — remove overlay
+      window.__nasRenderBatchId = null;
+      if (renderOverlayEl) renderOverlayEl.style.display = "none";
+    }
+  }
+
+  window.__nasRenderBatchId = requestAnimationFrame(renderBatch);
 }
 
 function getFilteredAssets() {
@@ -721,6 +782,7 @@ function initControls() {
     scanProgress.style.display = "flex";
     scanFill.style.width = "0%";
     scanText.textContent = "Scrolling page…";
+    document.body.classList.add("scanning");
 
     // Simulated progress: animate 0→85% over ~12s, snap to 100% on completion
     const scanStartTime = Date.now();
@@ -738,6 +800,7 @@ function initControls() {
     platformData = null;
     detectedPlatform = null;
     selectedUrls.clear();
+    feedWarningDismissed = false; // Reset on new scan — page may have changed
     renderGrid();
     renderBadges();
     updateDownloadBar();
@@ -824,8 +887,12 @@ function initControls() {
       renderPlatformMeta(platformData.platformMeta, detectedPlatform);
     }
 
+    // Check for feed page warning
+    checkFeedWarning();
+
     // Hide scan progress after brief flash of 100%
     setTimeout(() => { scanProgress.style.display = "none"; }, 600);
+    document.body.classList.remove("scanning");
     btn.disabled = false;
     btnText.textContent = originalText;
     showToast(`Deep scan complete — ${allAssets.length} assets found`);
@@ -1014,11 +1081,195 @@ function isDirectFetchableVideo(asset) {
   return false;
 }
 
-function initDownload() {
-  document.getElementById("downloadBtn").addEventListener("click", downloadKit);
+// ── Safety timeout for background downloads ──
+// If the background worker crashes and never sends "done"/"error",
+// the UI stays locked forever. This timer auto-unlocks after 120s.
+const BG_DOWNLOAD_TIMEOUT_MS = 120_000;
+let _bgDownloadTimer = null;
+
+function clearBgDownloadTimer() {
+  if (_bgDownloadTimer) {
+    clearTimeout(_bgDownloadTimer);
+    _bgDownloadTimer = null;
+  }
 }
 
+function startBgDownloadTimer() {
+  clearBgDownloadTimer();
+  _bgDownloadTimer = setTimeout(() => {
+    console.error("[downloadKit] Background download timed out after 120s — unlocking UI");
+    const progressEl = document.getElementById("downloadProgress");
+    const btn = document.getElementById("downloadBtn");
+    document.body.classList.remove("downloading");
+    if (progressEl) progressEl.style.display = "none";
+    if (btn) {
+      btn.style.display = "";
+      btn.disabled = false;
+      btn.textContent = "Download Kit ↓";
+    }
+    updateDownloadBar();
+    showToast("Download timed out — background worker may have crashed. Try again.");
+  }, BG_DOWNLOAD_TIMEOUT_MS);
+}
+
+function initDownload() {
+  document.getElementById("downloadBtn").addEventListener("click", downloadKit);
+
+  // Listen for background download progress (survives popup close/reopen)
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.action !== "downloadProgress") return;
+    const progressEl = document.getElementById("downloadProgress");
+    const progressFill = document.getElementById("progressFill");
+    const progressText = document.getElementById("progressText");
+    const btn = document.getElementById("downloadBtn");
+
+    if (msg.phase === "starting") {
+      // Download just started in background — lock UI, show progress
+      btn.style.display = "none";
+      progressEl.style.display = "flex";
+      progressFill.style.width = "0%";
+      progressFill.classList.remove("pulsing");
+      progressText.textContent = "Starting download…";
+      document.body.classList.add("downloading");
+      startBgDownloadTimer();
+    }
+
+    if (msg.phase === "fetching") {
+      // Asset fetch progress — update bar and text
+      const pct = msg.total > 0 ? Math.round((msg.completed / msg.total) * 100) : 0;
+      progressFill.style.width = `${pct}%`;
+      progressFill.classList.remove("pulsing");
+      const failedNote = msg.failed > 0 ? ` · ${msg.failed} failed` : "";
+      progressText.textContent = msg.detail || `${msg.completed} / ${msg.total}${failedNote}`;
+      // Reset safety timer on each progress tick (worker is alive)
+      startBgDownloadTimer();
+    }
+
+    if (msg.phase === "zipping") {
+      // Zipping phase — pulsing bar, almost done
+      progressFill.style.width = "100%";
+      progressFill.classList.add("pulsing");
+      progressText.textContent = msg.detail || "Zipping…";
+      // Reset safety timer — zipping can take a moment for huge kits
+      startBgDownloadTimer();
+    }
+
+    if (msg.phase === "done") {
+      // Download complete — unlock UI, show success toast
+      clearBgDownloadTimer();
+      progressFill.classList.remove("pulsing");
+      document.body.classList.remove("downloading");
+      progressEl.style.display = "none";
+      btn.style.display = "";
+      btn.disabled = false;
+      btn.textContent = "Download Kit ↓";
+      updateDownloadBar();
+      showToast(msg.detail || "Kit downloaded");
+    }
+
+    if (msg.phase === "error") {
+      // Download failed — unlock UI, show error toast
+      clearBgDownloadTimer();
+      progressFill.classList.remove("pulsing");
+      document.body.classList.remove("downloading");
+      progressEl.style.display = "none";
+      btn.style.display = "";
+      btn.disabled = false;
+      btn.textContent = "Download Kit ↓";
+      updateDownloadBar();
+      showToast(msg.detail || "Download failed. Check console.");
+    }
+  });
+}
+
+/** Route download: transcode assets → panel pipeline, everything else → background worker. */
 async function downloadKit() {
+  const btn = document.getElementById("downloadBtn");
+  const progressEl = document.getElementById("downloadProgress");
+  const progressFill = document.getElementById("progressFill");
+  const progressText = document.getElementById("progressText");
+
+  btn.style.display = "none";
+  progressEl.style.display = "flex";
+  progressFill.style.width = "0%";
+  document.body.classList.add("downloading");
+
+  const selected = allAssets.filter((a) => selectedUrls.has(a.url));
+  if (selected.length === 0) {
+    showToast("No assets selected");
+    document.body.classList.remove("downloading");
+    progressEl.style.display = "none";
+    btn.style.display = "";
+    return;
+  }
+
+  // Split: Instagram transcode assets stay in panel, everything else goes to background
+  const transcodeAssets = selected.filter((a) => a.needsMux || a.isMSECapture);
+  const bgAssets = selected.filter((a) => !a.needsMux && !a.isMSECapture);
+
+  // If we have transcode assets, handle them in the panel (needs WebCodecs/GPU)
+  if (transcodeAssets.length > 0 && bgAssets.length === 0) {
+    // All transcode — run legacy panel pipeline
+    return downloadKitInPanel(selected);
+  }
+
+  if (transcodeAssets.length > 0) {
+    // Mixed — run transcode in panel first, then send rest to background
+    // For now, show a warning and run everything in panel (legacy path)
+    progressText.textContent = "Processing video transcode…";
+    return downloadKitInPanel(selected);
+  }
+
+  // All non-transcode — delegate entirely to background service worker
+  progressText.textContent = "Starting download…";
+  startBgDownloadTimer();
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    // Send serializable asset data to background
+    const serializableAssets = bgAssets.map((a) => ({
+      url: a.url,
+      type: a.type,
+      ext: a.ext,
+      contentType: a.contentType,
+      displayName: a.displayName,
+      platformTag: a.platformTag,
+      username: a.username,
+      domWidth: a.domWidth,
+      domHeight: a.domHeight,
+      isLogo: a.isLogo,
+      isMSECapture: false,
+      needsMux: false,
+    }));
+
+    chrome.runtime.sendMessage({
+      action: "downloadKit",
+      assets: serializableAssets,
+      domData: domData ? {
+        colors: domData.colors,
+        fontInfo: domData.fontInfo,
+        pageMeta: domData.pageMeta,
+      } : null,
+      platform: detectedPlatform,
+      platformMeta: platformData?.platformMeta || null,
+      tabId: tab.id,
+    });
+
+    // Progress is now handled by the onMessage listener in initDownload().
+    // Panel can close — download continues in background.
+    progressText.textContent = "Downloading in background…";
+
+  } catch (err) {
+    console.error("Failed to start background download:", err);
+    clearBgDownloadTimer();
+    // Fallback to panel-based download
+    return downloadKitInPanel(selected);
+  }
+}
+
+/** Legacy panel-based download — used for Instagram transcode (needs WebCodecs). */
+async function downloadKitInPanel() {
   const btn = document.getElementById("downloadBtn");
   const progressEl = document.getElementById("downloadProgress");
   const progressFill = document.getElementById("progressFill");
@@ -1207,7 +1458,7 @@ async function downloadKit() {
         fileName = deduplicateFilename(fileName, nameSet);
         nameSet.add(fileName);
 
-        targetFolder.file(fileName, blob, { binary: true });
+        targetFolder.file(fileName, blob, { binary: true, compression: "STORE" });
         totalBytes += blob.size;
         completed++;
         updateProgress();
@@ -1253,8 +1504,8 @@ async function downloadKit() {
       zip.remove("logos");
     }
 
-    // Generate zip
-    const content = await zip.generateAsync({ type: "blob" });
+    // Generate zip — STORE compression (binary assets are already compressed)
+    const content = await zip.generateAsync({ type: "blob", compression: "STORE" });
     const dateStr = new Date().toISOString().slice(0, 10);
     const metaUser = platformData?.platformMeta?.username;
     let zipName;
@@ -1284,6 +1535,7 @@ async function downloadKit() {
     console.error("Kit generation failed:", err);
     showToast("Download failed. Check console.");
   } finally {
+    document.body.classList.remove("downloading");
     progressEl.style.display = "none";
     btn.style.display = "";
     btn.disabled = false;
@@ -1422,6 +1674,47 @@ function renderPlatformBadge() {
   badge.className = `platform-badge platform-${detectedPlatform}`;
   badge.style.display = "inline-flex";
   separator.style.display = "inline";
+}
+
+// ─── Feed Page Warning ───────────────────────────────────────────────
+// Shows a dismissible amber banner when the user is on a feed/discovery page
+// (homepage, explore, search) where assets come from multiple accounts.
+let feedWarningDismissed = false;
+
+function checkFeedWarning() {
+  if (feedWarningDismissed) return;
+  const banner = document.getElementById("feedWarning");
+  if (!banner) return;
+
+  const pageType = platformData?.pageType;
+  if (!pageType || !FEED_PAGE_TYPES.has(pageType)) {
+    banner.style.display = "none";
+    return;
+  }
+
+  // Customize message per platform/page
+  const textEl = document.getElementById("feedWarningText");
+  const platformLabel = PLATFORM_LABELS[detectedPlatform] || "this platform";
+  const pageLabel = pageType === "home" ? "homepage feed"
+    : pageType === "feed" ? "For You feed"
+    : pageType === "explore" ? "Explore page"
+    : pageType === "discover" ? "Discover page"
+    : pageType === "search" ? "search results"
+    : pageType === "list" ? "list feed"
+    : "feed page";
+
+  textEl.textContent = `You're on the ${pageLabel} — content from multiple accounts. Navigate to a specific ${platformLabel} profile or post for clean brand assets.`;
+  banner.style.display = "flex";
+}
+
+function initFeedWarning() {
+  const closeBtn = document.getElementById("feedWarningClose");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => {
+      feedWarningDismissed = true;
+      document.getElementById("feedWarning").style.display = "none";
+    });
+  }
 }
 
 function renderPlatformMeta(meta, platform) {

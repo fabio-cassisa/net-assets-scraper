@@ -36,6 +36,7 @@ function detectPageType() {
   const path = window.location.pathname;
   const search = window.location.search;
 
+  if (path === "/" || path === "")                    return "home";
   if (/\/posts\/\d+/.test(path))                   return "post";
   if (/\/videos\/\d+/.test(path))                  return "video";
   if (/\/watch\/?\?v=\d+/.test(path + search))     return "video";

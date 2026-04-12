@@ -239,7 +239,7 @@
 
   // ─── postMessage bridge (CSP-safe MAIN↔ISOLATED communication) ────
 
-  window.addEventListener("message", (event) => {
+  window.addEventListener("message", async (event) => {
     if (event.source !== window) return;
     const msg = event.data;
 
@@ -254,6 +254,32 @@
           ready: store.ready,
         },
       }, "*");
+    }
+
+    // Fetch a URL with full page cookies (MAIN world has full cookie jar)
+    if (msg?.type === "NAS_MAIN_FETCH" && msg.url) {
+      try {
+        const r = await fetch(msg.url, { credentials: "include" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const blob = await r.blob();
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          window.postMessage({
+            type: "NAS_MAIN_FETCH_RESPONSE",
+            requestId: msg.requestId,
+            dataUrl: reader.result,
+            contentType: blob.type,
+            size: blob.size,
+          }, "*");
+        };
+        reader.readAsDataURL(blob);
+      } catch (err) {
+        window.postMessage({
+          type: "NAS_MAIN_FETCH_RESPONSE",
+          requestId: msg.requestId,
+          error: err.message,
+        }, "*");
+      }
     }
   });
 
