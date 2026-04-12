@@ -124,15 +124,33 @@ other platforms (tiktok, twitter, vimeo) serve H.264 MP4 natively — no transco
 
 ## install
 
+### quick install (recommended)
+
+1. go to the [latest release](https://github.com/fabio-cassisa/ChromeAssetsScraper/releases/latest)
+2. download `net-assets-scraper-v*.zip`
+3. unzip it to a folder on your computer (anywhere is fine)
+4. open your browser → go to `chrome://extensions`
+   - arc: extensions → manage extensions
+   - brave: `brave://extensions`
+   - edge: `edge://extensions`
+5. toggle **developer mode** ON (top-right corner)
+6. click **load unpacked** → select the unzipped folder
+7. pin the NAS icon in your toolbar — done!
+
+### update to a new version
+
+1. download the new zip from [releases](https://github.com/fabio-cassisa/ChromeAssetsScraper/releases)
+2. unzip it to the **same folder** (overwrite)
+3. go to `chrome://extensions` → click the ↻ reload button on the NAS card
+
+### developer install
+
 ```
-1. clone or download this repo
-2. open chrome://extensions (or brave://extensions, edge://extensions, arc → manage extensions)
-3. enable "developer mode" (top right toggle)
-4. click "load unpacked" → select this folder
-5. browse to any site and click the extension icon
+git clone https://github.com/fabio-cassisa/ChromeAssetsScraper.git
+# open chrome://extensions → developer mode ON → load unpacked → select the cloned folder
 ```
 
-works on chrome, brave, edge, arc, and other chromium browsers.
+works on chrome, arc, brave, edge, and other chromium browsers.
 
 ## permissions
 
@@ -152,7 +170,7 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 
 ## status
 
-🟢 **v2.4 — deep scan + facebook video sprint complete**. scan progress bar, facebook video via new API format, post-scroll collection window.
+🟢 **v2.6 — stable release. background-survivable scanning + downloads.**
 
 - [x] passive network capture via `webRequest`
 - [x] smart brand color extraction (CSS vars → meta → DOM frequency)
@@ -169,33 +187,34 @@ works on chrome, brave, edge, arc, and other chromium browsers.
 - [x] vimeo — progressive H.264 MP4 via config API intercept
 - [x] smart asset naming (`@username-platform-context-WxH.ext`)
 - [x] platform metadata display (user, bio, followers, verified) for all 6 platforms
-- [x] smooth progress bar during VP9→H.264 transcode/mux pipeline
-- [x] failed download tracking (toast shows actual success/failure count)
-- [x] ghost image filtering (`%22` phantom URLs from SPA DOMs)
-- [x] twitter SPA stale data fix (hydration validation against URL)
-- [x] scan progress bar with animated phase feedback during deep scan
-- [x] facebook video via `progressive_urls` API format (`videoDeliveryResponseFragment`)
-- [x] post-scroll collection window (polls intercept data after scroll completes)
+- [x] background-survivable downloads — close panel, zip still appears
+- [x] background-survivable scanning — close panel mid-scan, reopen to get results
+- [x] scan cache with URL validation (prevents stale results on SPA navigation)
+- [x] per-asset failure tracking with `download-report.txt` in zip
+- [x] chrome notification on download completion
+- [x] feed page warning banners (home, explore, search = wrong page for brand assets)
+- [x] download + scan UI locks with safety timeouts
 
 **next — backlog:**
 
-- [ ] smarter deep scan (faster, configurable depth)
 - [ ] quick presets (brand kit / media pack / everything)
 - [ ] size awareness (zip estimate, adnami suite limits warning)
+- [ ] font file downloads (Google Fonts → `.woff2`)
 - [ ] image compression toggle (stay under 3.8MB for suite templates)
-- [ ] selective brand download (make brand items opt-in)
-- [ ] lazy rendering for 100+ cards
 - [ ] base64 memory optimization (streaming fetch instead of data URLs)
 
 **planned — drop 3:**
 
 - [ ] click-to-screenshot DOM elements as PNG
-- [ ] font file downloads (Google Fonts → `.woff2`)
 - [ ] batch mode (scan multiple pages)
 
 ## versioning
 
-- `v2.4` — current. deep scan + facebook video — scan progress bar, facebook `progressive_urls` API capture, post-scroll collection window.
+all releases available at [github.com/fabio-cassisa/ChromeAssetsScraper/releases](https://github.com/fabio-cassisa/ChromeAssetsScraper/releases)
+
+- `v2.6` — **current stable.** background-survivable scanning + downloads, scan cache with URL validation, SPA stale-data fix.
+- `v2.5` — background download pipeline, feed warnings, UI locks, grid batching.
+- `v2.4` — deep scan progress bar, facebook `progressive_urls` API capture, post-scroll collection window.
 - `v2.3` — phase B polish — smart naming, platform metadata, progress bar, audit fixes.
 - `v2.2` — social media mode complete — 6 platforms with MAIN world API interception.
 - `v2.1` — instagram video pipeline (VP9→H.264 transcode + mux).
