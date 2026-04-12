@@ -318,6 +318,55 @@ body {
   gap: 12px;
 }
 
+/* ─── Quick Presets Bar ──────────────────────────────────────────── */
+.presets-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+}
+
+.preset-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 20px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: var(--font-main);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.preset-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.preset-pill.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.preset-pill svg {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.preset-pill:hover svg,
+.preset-pill.active svg {
+  opacity: 1;
+}
+
 .filter-toggle {
   display: flex;
   align-items: center;
@@ -873,6 +922,7 @@ video.card-thumb {
 /* While a download is running, disable all interaction except the progress bar */
 body.downloading .filter-bar,
 body.downloading .controls-bar,
+body.downloading .presets-bar,
 body.downloading .asset-grid,
 body.downloading .feed-warning,
 body.downloading .scan-chip {
@@ -891,6 +941,7 @@ body.downloading .download-bar {
 /* While scanning, dim and disable everything below the header/scan bar */
 body.scanning .filter-bar,
 body.scanning .controls-bar,
+body.scanning .presets-bar,
 body.scanning .asset-grid,
 body.scanning .feed-warning,
 body.scanning .download-bar {
