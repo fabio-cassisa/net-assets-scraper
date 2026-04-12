@@ -1229,8 +1229,12 @@ async function downloadKit() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
     // Send serializable asset data to background
+    // Resolve relative URLs against the tab's origin — service worker has no page context
+    const pageOrigin = new URL(tab.url).origin;
     const serializableAssets = bgAssets.map((a) => ({
-      url: a.url,
+      url: a.url.startsWith("/") ? `${pageOrigin}${a.url}`
+        : a.url.startsWith("http") || a.url.startsWith("data:") || a.url.startsWith("blob:") ? a.url
+        : `${pageOrigin}/${a.url}`,
       type: a.type,
       ext: a.ext,
       contentType: a.contentType,
@@ -1511,7 +1515,7 @@ async function downloadKitInPanel() {
     const metaUser = platformData?.platformMeta?.username;
     let zipName;
     if (detectedPlatform && metaUser) {
-      zipName = `@${metaUser}-${detectedPlatform}-assets-${dateStr}.zip`;
+      zipName = `@${metaUser.replace(/^@/, "")}-${detectedPlatform}-assets-${dateStr}.zip`;
     } else if (detectedPlatform) {
       zipName = `${detectedPlatform}-assets-${dateStr}.zip`;
     } else {
@@ -1561,7 +1565,7 @@ function buildFinalFilename(asset, ext) {
 
   if (asset.platformTag) {
     const parts = [];
-    if (asset.username) parts.push(`@${asset.username}`);
+    if (asset.username) parts.push(`@${asset.username.replace(/^@/, "")}`);
     parts.push(asset.platformTag);
     // Append dimensions when known (useful for picking the right size)
     const w = asset.domWidth || 0;

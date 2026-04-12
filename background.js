@@ -259,7 +259,7 @@ function bgBuildFilename(asset, ext) {
   const e = ext || bgGuessExt(asset, "");
   if (asset.platformTag) {
     const parts = [];
-    if (asset.username) parts.push(`@${asset.username}`);
+    if (asset.username) parts.push(`@${asset.username.replace(/^@/, "")}`);
     parts.push(asset.platformTag);
     const w = asset.domWidth || 0;
     const h = asset.domHeight || 0;
@@ -503,7 +503,7 @@ async function handleDownloadKit(msg) {
     const metaUser = platformMeta?.username;
     let zipName;
     if (platform && metaUser) {
-      zipName = `@${metaUser}-${platform}-assets-${dateStr}.zip`;
+      zipName = `@${metaUser.replace(/^@/, "")}-${platform}-assets-${dateStr}.zip`;
     } else if (platform) {
       zipName = `${platform}-assets-${dateStr}.zip`;
     } else {
