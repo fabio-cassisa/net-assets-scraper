@@ -789,64 +789,15 @@ function initControls() {
     renderBadges();
   });
 
-  document.getElementById("selectNone").addEventListener("click", () => {
-    selectedUrls.clear();
-    clearActivePreset();
-    renderGrid();
-    updateDownloadBar();
-  });
-
-  // ── Quick Presets ────────────────────────────────────────────────────
-  const BRAND_TAGS = new Set([
-    "avatar", "profile-pic", "profile-picture", "banner", "cover",
-    "cover-photo", "channel-art", "logo", "profile-image",
-  ]);
-
-  function isBrandAsset(a) {
-    if (a.isLogo) return true;
-    if (a.platformTag) {
-      const tag = a.platformTag.toLowerCase();
-      // Match any tag that contains a brand keyword
-      return Array.from(BRAND_TAGS).some((bt) => tag.includes(bt));
-    }
-    return false;
-  }
-
-  function setActivePreset(id) {
-    document.querySelectorAll(".preset-pill").forEach((p) => p.classList.remove("active"));
-    document.getElementById(id)?.classList.add("active");
-  }
-
-  function clearActivePreset() {
-    document.querySelectorAll(".preset-pill").forEach((p) => p.classList.remove("active"));
-  }
-
-  document.getElementById("presetBrand").addEventListener("click", () => {
-    selectedUrls.clear();
-    const filtered = getFilteredAssets();
-    filtered.forEach((a) => { if (isBrandAsset(a)) selectedUrls.add(a.url); });
-    setActivePreset("presetBrand");
-    renderGrid();
-    updateDownloadBar();
-    const count = selectedUrls.size;
-    if (count === 0) showToast("No brand assets detected — try a profile page");
-  });
-
-  document.getElementById("presetMedia").addEventListener("click", () => {
-    selectedUrls.clear();
-    const filtered = getFilteredAssets();
-    filtered.forEach((a) => {
-      if ((a.type === "image" || a.type === "video") && !a.isUI) selectedUrls.add(a.url);
-    });
-    setActivePreset("presetMedia");
-    renderGrid();
-    updateDownloadBar();
-  });
-
-  document.getElementById("presetAll").addEventListener("click", () => {
+  document.getElementById("selectAll").addEventListener("click", () => {
     const filtered = getFilteredAssets();
     filtered.forEach((a) => selectedUrls.add(a.url));
-    setActivePreset("presetAll");
+    renderGrid();
+    updateDownloadBar();
+  });
+
+  document.getElementById("selectNone").addEventListener("click", () => {
+    selectedUrls.clear();
     renderGrid();
     updateDownloadBar();
   });
@@ -912,8 +863,6 @@ function toggleSelection(url) {
   } else {
     selectedUrls.add(url);
   }
-  // Manual toggle breaks any active preset — clear highlight
-  document.querySelectorAll(".preset-pill").forEach((p) => p.classList.remove("active"));
 }
 
 function updateDownloadBar() {
