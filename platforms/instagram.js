@@ -93,11 +93,12 @@ function requestMSEVideoData(videoId) {
 function detectPageType() {
   const path = window.location.pathname;
 
-  if (/^\/p\/[\w-]+\/?/.test(path))      return "post";
-  if (/^\/reels?\/[\w-]+\/?/.test(path))  return "reel";
-  if (/^\/stories\/[\w.]+\/?/.test(path)) return "stories";
-  if (/^\/explore\/?/.test(path))          return "explore";
-  if (/^\/[\w.]+\/?$/.test(path) && path !== "/") return "profile";
+  if (path === "/" || path === "")           return "home";
+  if (/^\/p\/[\w-]+\/?/.test(path))         return "post";
+  if (/^\/reels?\/[\w-]+\/?/.test(path))    return "reel";
+  if (/^\/stories\/[\w.]+\/?/.test(path))   return "stories";
+  if (/^\/explore\/?/.test(path))            return "explore";
+  if (/^\/[\w.]+\/?$/.test(path))            return "profile";
 
   return "other";
 }

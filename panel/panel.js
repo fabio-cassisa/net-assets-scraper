@@ -69,7 +69,8 @@ const PLATFORM_SCRIPTS = {
 const FEED_PAGE_TYPES = new Set([
   "home", "explore", "search", "list",  // Twitter
   "feed", "discover",                     // TikTok FYP + discover
-  // Facebook "home" is already covered by "home"
+  "browse",                               // YouTube feed/trending/gaming
+  // Facebook/Instagram "home" covered by "home"
 ]);
 
 function detectPlatform(url) {

@@ -34,6 +34,7 @@ const TW_CDN_PATTERN = /twimg\.com/;
 function detectPageType() {
   const path = window.location.pathname;
 
+  if (path === "/" || path === "")              return "home";
   if (/^\/\w+\/status\/\d+/.test(path))        return "tweet";
   if (/^\/i\/lists\/\d+/.test(path))            return "list";
   if (/^\/search\b/.test(path))                 return "search";
@@ -44,7 +45,7 @@ function detectPageType() {
   if (/^\/\w+\/media\/?$/.test(path))           return "media";
   if (/^\/\w+\/likes\/?$/.test(path))           return "likes";
   // Profile — single path segment (username)
-  if (/^\/\w+\/?$/.test(path) && path !== "/")  return "profile";
+  if (/^\/\w+\/?$/.test(path))                  return "profile";
 
   return "other";
 }
