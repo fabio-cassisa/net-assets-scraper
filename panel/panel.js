@@ -86,6 +86,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initTabNav();
   initControls();
   initDownload();
+  initScan();
   initFeedWarning();
   scanCurrentTab();
 });
@@ -117,26 +118,58 @@ async function scanCurrentTab() {
     return;
   }
 
-  // 1. Get network resources from background service worker
+  // ── Check background for cached deep scan results ──
+  // If a deep scan completed (or is in progress) for this tab, use/show that
+  // instead of the lightweight scan — deep results are strictly better.
+  try {
+    const cache = await chrome.runtime.sendMessage({ action: "getScanCache", tabId: tab.id, tabUrl: tab.url });
+    if (cache?.cached && cache.status === "complete") {
+      // Fresh deep scan results available — use them
+      applyScanResults(cache.platformData, cache.domData, cache.networkResources);
+      showToast("Restored deep scan results");
+      return;
+    }
+    if (cache?.cached && cache.status === "scanning") {
+      // Scan is still running in background — show scanning UI, wait for scanProgress
+      const btn = document.getElementById("refreshBtn");
+      const btnText = btn?.querySelector("span");
+      const scanProgress = document.getElementById("scanProgress");
+      const scanFill = document.getElementById("scanProgressFill");
+      const scanText = document.getElementById("scanProgressText");
+      btn.disabled = true;
+      if (btnText) btnText.textContent = "Scanning…";
+      scanProgress.style.display = "flex";
+      scanFill.style.width = "50%";
+      scanText.textContent = "Scan in progress…";
+      document.body.classList.add("scanning");
+      startBgScanTimer();
+      // Don't do lightweight scan — wait for background to finish
+      return;
+    }
+  } catch {
+    // getScanCache failed — proceed with lightweight scan
+  }
+
+  // ── Lightweight scan (no scrolling — just what's already loaded) ──
   const bgResponse = await chrome.runtime.sendMessage({
     action: "getResources",
     tabId: tab.id,
   });
   const networkResources = bgResponse?.resources || [];
 
-  // 2. Get DOM analysis from content script
+  // Get DOM analysis from content script
   domData = await queryContentScript(tab.id);
 
-  // 3. If on a known platform, also query the platform-specific script
+  // If on a known platform, also query the platform-specific script
   platformData = null;
   if (detectedPlatform && PLATFORM_SCRIPTS[detectedPlatform]) {
     platformData = await queryPlatformScript(tab.id, detectedPlatform);
   }
 
-  // 4. Merge network resources with DOM context + platform assets
+  // Merge network resources with DOM context + platform assets
   allAssets = enrichAssets(networkResources, domData?.imageContext || [], platformData);
 
-  // 5. Render
+  // Render
   renderGrid();
   renderBadges();
 
@@ -772,7 +805,6 @@ function initControls() {
   document.getElementById("refreshBtn").addEventListener("click", async () => {
     const btn = document.getElementById("refreshBtn");
     const btnText = btn.querySelector("span");
-    const originalText = btnText.textContent;
     const scanProgress = document.getElementById("scanProgress");
     const scanFill = document.getElementById("scanProgressFill");
     const scanText = document.getElementById("scanProgressText");
@@ -782,20 +814,10 @@ function initControls() {
     btnText.textContent = "Scanning…";
     scanProgress.style.display = "flex";
     scanFill.style.width = "0%";
-    scanText.textContent = "Scrolling page…";
+    scanText.textContent = "Starting scan…";
     document.body.classList.add("scanning");
 
-    // Simulated progress: animate 0→85% over ~12s, snap to 100% on completion
-    const scanStartTime = Date.now();
-    const expectedDuration = 12000; // 12s expected scan time
-    const scanTimer = setInterval(() => {
-      const elapsed = Date.now() - scanStartTime;
-      const pct = Math.min(85, (elapsed / expectedDuration) * 85);
-      scanFill.style.width = `${Math.round(pct)}%`;
-      if (pct > 60) scanText.textContent = "Analyzing assets…";
-      else if (pct > 30) scanText.textContent = "Loading content…";
-    }, 200);
-
+    // Clear stale state
     allAssets = [];
     domData = null;
     platformData = null;
@@ -806,97 +828,31 @@ function initControls() {
     renderBadges();
     updateDownloadBar();
 
-    // Deep scan: auto-scrolls the page to trigger lazy loaders
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab && !isRestrictedTab(tab)) {
-        // Detect platform for this scan
         detectedPlatform = detectPlatform(tab.url);
         renderPlatformBadge();
 
-        // If on a known platform, use platform-specific deep scan
-        if (detectedPlatform && PLATFORM_SCRIPTS[detectedPlatform]) {
-          try {
-            platformData = await chrome.tabs.sendMessage(tab.id, { action: "deepScanPlatform" });
-          } catch {
-            try {
-              await chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                files: [PLATFORM_SCRIPTS[detectedPlatform]],
-              });
-              await new Promise((r) => setTimeout(r, 300));
-              platformData = await chrome.tabs.sendMessage(tab.id, { action: "deepScanPlatform" });
-            } catch {
-              platformData = null;
-            }
-          }
-          // Fallback: if deepScan failed/returned nothing, try lightweight analyzePlatform
-          // (no scrolling — just grabs what's already loaded + intercepted videos)
-          if (!platformData || !platformData.platform) {
-            try {
-              platformData = await chrome.tabs.sendMessage(tab.id, { action: "analyzePlatform" });
-            } catch {
-              platformData = null;
-            }
-          }
-        }
-
-        try {
-          // If platform already deep-scanned (scrolled), just analyze DOM without re-scrolling
-          const domAction = platformData ? "analyzeDOM" : "deepScan";
-          domData = await chrome.tabs.sendMessage(tab.id, { action: domAction });
-        } catch {
-          // Fallback: inject + scan
-          try {
-            await chrome.scripting.executeScript({
-              target: { tabId: tab.id },
-              files: ["content.js"],
-            });
-            await new Promise((r) => setTimeout(r, 300));
-            const domAction = platformData ? "analyzeDOM" : "deepScan";
-            domData = await chrome.tabs.sendMessage(tab.id, { action: domAction });
-          } catch {
-            domData = null;
-          }
-        }
-
-        // Also grab network resources
-        const bgResponse = await chrome.runtime.sendMessage({
-          action: "getResources",
+        // Route scan through background service worker (survives panel close)
+        startBgScanTimer();
+        chrome.runtime.sendMessage({
+          action: "startScan",
           tabId: tab.id,
+          tabUrl: tab.url,
+          platform: detectedPlatform,
+          platformScript: (detectedPlatform && PLATFORM_SCRIPTS[detectedPlatform]) || null,
         });
-        const networkResources = bgResponse?.resources || [];
-
-        allAssets = enrichAssets(networkResources, domData?.imageContext || [], platformData);
+        // Results arrive via scanProgress listener in initScan()
+        // UI unlock happens there too — nothing more to do here
+        return;
       }
     } catch (err) {
       console.error("NAS deep scan error:", err);
     }
 
-    // Always render results — even partial data is better than stale UI
-    clearInterval(scanTimer);
-    scanFill.style.width = "100%";
-    scanText.textContent = "Done";
-    renderGrid();
-    renderBadges();
-    if (domData) {
-      renderColors(domData.colors);
-      renderFonts(domData.fontInfo);
-      renderMeta(domData.pageMeta);
-    }
-    if (platformData?.platformMeta) {
-      renderPlatformMeta(platformData.platformMeta, detectedPlatform);
-    }
-
-    // Check for feed page warning
-    checkFeedWarning();
-
-    // Hide scan progress after brief flash of 100%
-    setTimeout(() => { scanProgress.style.display = "none"; }, 600);
-    document.body.classList.remove("scanning");
-    btn.disabled = false;
-    btnText.textContent = originalText;
-    showToast(`Deep scan complete — ${allAssets.length} assets found`);
+    // Only reached if tab was restricted or query failed
+    finishScanUI("Cannot scan this page.");
   });
 }
 
@@ -1179,6 +1135,98 @@ function initDownload() {
       btn.textContent = "Download Kit ↓";
       updateDownloadBar();
       showToast(msg.detail || "Download failed. Check console.");
+    }
+  });
+}
+
+// ─── Background Scan Progress Listener ───────────────────────────────
+// Mirrors the downloadProgress listener pattern. Background sends
+// scanProgress messages as it orchestrates the deep scan.
+
+let _bgScanTimer = null;
+const BG_SCAN_TIMEOUT_MS = 60000; // 60s safety timeout for scans
+
+function startBgScanTimer() {
+  clearTimeout(_bgScanTimer);
+  _bgScanTimer = setTimeout(() => {
+    console.error("[scan] Background scan timed out after 60s — unlocking UI");
+    finishScanUI("Scan timed out — try again.");
+  }, BG_SCAN_TIMEOUT_MS);
+}
+
+function clearBgScanTimer() {
+  clearTimeout(_bgScanTimer);
+  _bgScanTimer = null;
+}
+
+/** Restore scan UI to idle state with optional toast. */
+function finishScanUI(toastMsg) {
+  clearBgScanTimer();
+  const btn = document.getElementById("refreshBtn");
+  const btnText = btn?.querySelector("span");
+  const scanProgress = document.getElementById("scanProgress");
+  document.body.classList.remove("scanning");
+  if (scanProgress) scanProgress.style.display = "none";
+  if (btn) btn.disabled = false;
+  if (btnText) btnText.textContent = "Deep Scan ⟳";
+  if (toastMsg) showToast(toastMsg);
+}
+
+/** Apply scan results to panel state and render everything. */
+function applyScanResults(pData, dData, netResources) {
+  platformData = pData;
+  domData = dData;
+  allAssets = enrichAssets(netResources || [], dData?.imageContext || [], pData);
+  renderGrid();
+  renderBadges();
+  if (dData) {
+    renderColors(dData.colors);
+    renderFonts(dData.fontInfo);
+    renderMeta(dData.pageMeta);
+  }
+  if (pData?.platformMeta) {
+    renderPlatformMeta(pData.platformMeta, detectedPlatform);
+  }
+  checkFeedWarning();
+}
+
+function initScan() {
+  // Listen for background scan progress (survives panel close/reopen)
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.action !== "scanProgress") return;
+
+    const scanProgressEl = document.getElementById("scanProgress");
+    const scanFill = document.getElementById("scanProgressFill");
+    const scanText = document.getElementById("scanProgressText");
+
+    if (msg.phase === "platform-scan" || msg.phase === "dom-scan") {
+      // Scan is running — show progress, reset safety timer
+      scanProgressEl.style.display = "flex";
+      document.body.classList.add("scanning");
+      if (msg.phase === "platform-scan") {
+        scanFill.style.width = "30%";
+        scanText.textContent = msg.detail || "Scrolling page…";
+      } else {
+        scanFill.style.width = "70%";
+        scanText.textContent = msg.detail || "Analyzing assets…";
+      }
+      startBgScanTimer();
+    }
+
+    if (msg.phase === "complete") {
+      // Scan complete — apply results, unlock UI
+      scanFill.style.width = "100%";
+      scanText.textContent = "Done";
+      applyScanResults(msg.platformData, msg.domData, msg.networkResources);
+      const count = allAssets.length;
+      setTimeout(() => {
+        finishScanUI(`Deep scan complete — ${count} assets found`);
+      }, 600); // Brief flash of 100%
+    }
+
+    if (msg.phase === "error") {
+      // Scan failed — unlock UI, show error
+      finishScanUI(msg.detail || "Scan failed. Check console.");
     }
   });
 }

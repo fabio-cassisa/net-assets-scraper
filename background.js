@@ -31,6 +31,11 @@ const SKIP_DOMAINS = new Set([
 // In-memory store per tab: tabId → Map<url, resourceMeta>
 const tabResources = new Map();
 
+// Scan pipeline state — survives panel close/reopen
+const scanCache = new Map();            // tabId → { status, platformData, domData, networkResources, timestamp }
+const activeScanKeepalive = new Map();  // tabId → intervalId
+const SCAN_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 // ─── Helpers ─────────────────────────────────────────────────────────
 function getExtensionFromUrl(url) {
   try {
@@ -142,11 +147,17 @@ function handleRequest(details) {
 // ─── Tab lifecycle — cleanup on close/navigate ───────────────────────
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabResources.delete(tabId);
+  scanCache.delete(tabId);
+  const scanTimer = activeScanKeepalive.get(tabId);
+  if (scanTimer) { clearInterval(scanTimer); activeScanKeepalive.delete(tabId); }
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === "loading" && changeInfo.url) {
     tabResources.delete(tabId);
+    scanCache.delete(tabId);
+    const scanTimer = activeScanKeepalive.get(tabId);
+    if (scanTimer) { clearInterval(scanTimer); activeScanKeepalive.delete(tabId); }
   }
 });
 
@@ -184,6 +195,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // async
   }
+
+  // ─── Background scan pipeline ──────────────────────────────────────
+  // Panel sends scan request → background orchestrates content script
+  // messaging, caches results, reports progress. Survives panel close.
+  if (message.action === "startScan") {
+    handleStartScan(message).then(() => {
+      sendResponse({ ok: true });
+    }).catch((err) => {
+      sendResponse({ error: err.message });
+    });
+    return true; // async
+  }
+
+  if (message.action === "getScanCache") {
+    const tabId = message.tabId;
+    const tabUrl = message.tabUrl || "";
+    const cached = scanCache.get(tabId);
+    if (!cached || cached.status === "error") {
+      sendResponse({ cached: false });
+    } else if (cached.url && tabUrl && cached.url !== tabUrl) {
+      // URL changed (SPA navigation) — stale cache, invalidate
+      scanCache.delete(tabId);
+      sendResponse({ cached: false });
+    } else if (cached.status === "scanning") {
+      sendResponse({ cached: true, status: "scanning" });
+    } else if (Date.now() - cached.timestamp > SCAN_CACHE_TTL_MS) {
+      // Expired — clean up
+      scanCache.delete(tabId);
+      sendResponse({ cached: false });
+    } else {
+      sendResponse({
+        cached: true,
+        status: "complete",
+        platformData: cached.platformData,
+        domData: cached.domData,
+        networkResources: cached.networkResources,
+      });
+    }
+    return false;
+  }
 });
 
 // ─── Background Download Pipeline ────────────────────────────────────
@@ -219,6 +270,15 @@ function arrayBufferToDataUrl(buffer, mimeType) {
 function sendProgress(data) {
   try {
     chrome.runtime.sendMessage({ action: "downloadProgress", ...data }).catch(() => {});
+  } catch {
+    // Panel closed — ignore
+  }
+}
+
+/** Send scan progress update to panel (best-effort — panel may be closed). */
+function sendScanProgress(data) {
+  try {
+    chrome.runtime.sendMessage({ action: "scanProgress", ...data }).catch(() => {});
   } catch {
     // Panel closed — ignore
   }
@@ -565,6 +625,118 @@ async function handleDownloadKit(msg) {
   } finally {
     // Always clean up keepalive — whether success, failure, or crash
     clearInterval(keepaliveTimer);
+  }
+}
+
+// ─── Background Scan Pipeline ────────────────────────────────────────
+// Runs deep scan from service worker. Panel can close at any time —
+// results are cached and available when panel reopens.
+
+/**
+ * Orchestrate a deep scan entirely from the service worker.
+ * Panel sends { tabId, platform, platformScript, tabUrl } → background handles
+ * all content script messaging, caches results, reports progress.
+ */
+async function handleStartScan({ tabId, platform, platformScript, tabUrl }) {
+  // Guard: reject if scan already running for this tab
+  const existing = scanCache.get(tabId);
+  if (existing?.status === "scanning") {
+    sendScanProgress({ phase: "error", detail: "Scan already in progress for this tab." });
+    return;
+  }
+
+  // Init cache entry
+  scanCache.set(tabId, { status: "scanning", url: tabUrl || "", platformData: null, domData: null, networkResources: [], timestamp: Date.now() });
+
+  // Keepalive — same 25s pattern as downloads
+  const keepaliveTimer = setInterval(() => {
+    chrome.runtime.getPlatformInfo(() => {});
+  }, 25000);
+  activeScanKeepalive.set(tabId, keepaliveTimer);
+
+  try {
+    let platformData = null;
+    let domData = null;
+
+    // ── Phase 1: Platform-specific deep scan (scrolling + asset extraction) ──
+    if (platform && platformScript) {
+      sendScanProgress({ phase: "platform-scan", detail: "Scrolling page…" });
+      try {
+        platformData = await chrome.tabs.sendMessage(tabId, { action: "deepScanPlatform" });
+      } catch {
+        // Content script not injected yet — inject and retry
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            files: [platformScript],
+          });
+          await new Promise((r) => setTimeout(r, 300));
+          platformData = await chrome.tabs.sendMessage(tabId, { action: "deepScanPlatform" });
+        } catch {
+          platformData = null;
+        }
+      }
+      // Fallback: lightweight analyzePlatform (no scrolling)
+      if (!platformData || !platformData.platform) {
+        try {
+          platformData = await chrome.tabs.sendMessage(tabId, { action: "analyzePlatform" });
+        } catch {
+          platformData = null;
+        }
+      }
+    }
+
+    // ── Phase 2: DOM analysis ──
+    sendScanProgress({ phase: "dom-scan", detail: platformData ? "Analyzing assets…" : "Scanning page…" });
+    const domAction = platformData ? "analyzeDOM" : "deepScan";
+    try {
+      domData = await chrome.tabs.sendMessage(tabId, { action: domAction });
+    } catch {
+      // Fallback: inject content.js and retry
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ["content.js"],
+        });
+        await new Promise((r) => setTimeout(r, 300));
+        domData = await chrome.tabs.sendMessage(tabId, { action: domAction });
+      } catch {
+        domData = null;
+      }
+    }
+
+    // ── Phase 3: Network resources (local — no messaging needed) ──
+    const resources = tabResources.get(tabId);
+    const networkResources = resources ? Array.from(resources.values()) : [];
+
+    // ── Cache results ──
+    scanCache.set(tabId, {
+      status: "complete",
+      url: tabUrl || "",
+      platformData,
+      domData,
+      networkResources,
+      timestamp: Date.now(),
+    });
+
+    // ── Report completion to panel (best-effort) ──
+    sendScanProgress({
+      phase: "complete",
+      platformData,
+      domData,
+      networkResources,
+    });
+
+    console.log(`[BG scan] Tab ${tabId} scan complete — platform: ${platform || "generic"}, network: ${networkResources.length} resources`);
+
+  } catch (err) {
+    console.error("[BG scan] Fatal error:", err);
+    scanCache.set(tabId, { status: "error", error: err.message, timestamp: Date.now() });
+    sendScanProgress({ phase: "error", detail: `Scan failed: ${err.message || "Unknown error"}` });
+  } finally {
+    // Always clean up keepalive
+    clearInterval(keepaliveTimer);
+    activeScanKeepalive.delete(tabId);
   }
 }
 
