@@ -22,7 +22,9 @@ non-technical people use this — sales, account managers. it needs to be dead s
 - **deep scan** — auto-scrolls the entire page to trigger lazy-loaded images (IntersectionObserver, `data-src`, `data-lazy-src`, etc.), then runs full DOM analysis.
 - **font detection** — finds Google Fonts links, Adobe Fonts/TypeKit, `@font-face` declarations, and computed font families from key elements.
 - **preview grid** — visual grid with real thumbnails, video frame grabs, and live font glyph rendering. type badges, logo badges, file sizes, dimensions.
-- **organized download** — selected assets go into a zip: `logos/`, `images/`, `videos/`, `fonts/` + a `brand.json` with all extracted colors, fonts, and page metadata.
+- **organized download** — selected assets go into a zip: `logos/`, `images/`, `videos/`, `fonts/` + a `brand.json` with all extracted colors, fonts, and page metadata + a self-contained `brand-guideline.html` you can open in any browser.
+- **font file downloads** — proactively fetches font files from Google Fonts CSS and `@font-face` declarations. resolves `.woff2` URLs even if fonts were cached before the extension loaded.
+- **export tokens** — the brand guideline page includes on-demand exports: CSS custom properties (`brand-tokens.css`), W3C Design Tokens JSON (`brand-tokens.json` — Figma Tokens Studio / Style Dictionary compatible), and a markdown brand brief for AI agents. plus print/PDF for non-technical handoff.
 
 ## platform support
 
@@ -74,8 +76,10 @@ no build step, no bundler, no framework. vanilla JS. coworkers install by draggi
 
 ```
 ├── manifest.json          # manifest v3 — permissions, content scripts, MAIN world entries
-├── background.js          # service worker — webRequest passive capture
+├── background.js          # service worker — webRequest passive capture, download pipeline, font resolution, brand kit builder
 ├── content.js             # content script — DOM analysis, color/font/image extraction, deep scan, fetchBlob proxy
+├── guideline-viewer.html  # extension page — brand guideline viewer (dark/light theme, export buttons)
+├── guideline-viewer.js    # guideline renderer — DOM builder, token generators, copy/download/print wiring
 ├── panel/
 │   ├── panel.html         # popup UI
 │   ├── panel.css          # cyberpunk dark theme
@@ -159,6 +163,8 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 - `scripting` — inject content script for DOM analysis
 - `downloads` — save the zip file
 - `clipboardWrite` — copy color hex codes
+- `storage` — persist user settings (compression, min size, quick scan, auto-select logos)
+- `notifications` — download completion alerts
 - `host_permissions: <all_urls>` — capture from any site
 
 ## known behaviors
@@ -170,7 +176,7 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 
 ## status
 
-🟢 **v2.6 — stable release. background-survivable scanning + downloads.**
+🟢 **v2.7 — stable release. brand intelligence + settings panel + image compression.**
 
 - [x] passive network capture via `webRequest`
 - [x] smart brand color extraction (CSS vars → meta → DOM frequency)
@@ -194,25 +200,44 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 - [x] chrome notification on download completion
 - [x] feed page warning banners (home, explore, search = wrong page for brand assets)
 - [x] download + scan UI locks with safety timeouts
+- [x] **brand guideline generator** — self-contained `brand-guideline.html` in every zip: dark/light theme toggle, click-to-copy values, color swatches, typography samples, CTA button replicas, social links
+- [x] **open brand guideline** — preview the guideline page directly from the panel without downloading
+- [x] **settings panel** — gear icon with persistent preferences: quick scan, min image size, auto-select logos, image compression
+- [x] **quick scan mode** — skip auto-scrolling, analyze only what's visible (fast but less thorough)
+- [x] **min image size filter** — configurable threshold (48/100/200/400px) to cut noise
+- [x] **auto-select logos** — logo-flagged images pre-selected on scan results
+- [x] **image compression** — optional downscale (max 2000px) + JPEG 80% quality, skip SVG/fonts/videos
+- [x] **enhanced brand extraction** — typography scale (h1-h3, body, button), social links, favicon variants, JSON-LD structured data, semantic color roles (primary/secondary/bg/text), copy + CTA recipes
+- [x] **font file downloads** — proactive Google Fonts CSS → `.woff2` resolution, `@font-face` direct URL fetching, deduplication against webRequest-captured fonts
+- [x] **export tokens** — on-demand from guideline page: CSS custom properties, W3C Design Tokens JSON (Figma/Style Dictionary), markdown brand brief (AI agents). print/PDF support.
+- [x] **quick summary** — plain-text brand summary banner in the guideline page: brand name, colors, fonts, CTA style. one-click copy for sales/non-technical handoff.
 
-**next — backlog:**
+**next — backlog (v2.8 candidates):**
 
-- [ ] quick presets (brand kit / media pack / everything)
 - [ ] size awareness (zip estimate, adnami suite limits warning)
-- [ ] font file downloads (Google Fonts → `.woff2`)
-- [ ] image compression toggle (stay under 3.8MB for suite templates)
 - [ ] base64 memory optimization (streaming fetch instead of data URLs)
+- [ ] smart color deduplication (merge near-identical hex values)
 
 **planned — drop 3:**
 
 - [ ] click-to-screenshot DOM elements as PNG
 - [ ] batch mode (scan multiple pages)
+- [ ] CTA PNG export (render extracted buttons to PNG via OffscreenCanvas)
+
+**ideas — parking lot:**
+
+- [ ] recent scans history (quick access to previously scanned sites)
+- [ ] brand comparison (side-by-side two brand guideline pages)
+- [ ] figma plugin companion (direct import from guideline page)
+- [ ] team presets (export/import scan settings for team standardization)
+- [ ] color palette generation (complementary/analogous from extracted brand colors)
 
 ## versioning
 
 all releases available at [github.com/fabio-cassisa/ChromeAssetsScraper/releases](https://github.com/fabio-cassisa/ChromeAssetsScraper/releases)
 
-- `v2.6` — **current stable.** background-survivable scanning + downloads, scan cache with URL validation, SPA stale-data fix.
+- `v2.7` — **current stable.** brand guideline generator, settings panel, enhanced brand extraction, font file downloads (Google Fonts CSS resolution), export tokens (CSS/Design Tokens JSON/markdown brief), quick summary for sales, print/PDF support.
+- `v2.6` — background-survivable scanning + downloads, scan cache with URL validation, SPA stale-data fix.
 - `v2.5` — background download pipeline, feed warnings, UI locks, grid batching.
 - `v2.4` — deep scan progress bar, facebook `progressive_urls` API capture, post-scroll collection window.
 - `v2.3` — phase B polish — smart naming, platform metadata, progress bar, audit fixes.

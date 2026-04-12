@@ -235,6 +235,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     return false;
   }
+
+  // ─── Generate brand kit data on demand (for guideline viewer page) ──
+  if (message.action === "generateGuideline") {
+    try {
+      const kit = buildBrandKit(message.domData, 0);
+      sendResponse({ kit });
+    } catch (err) {
+      sendResponse({ error: err.message });
+    }
+    return false;
+  }
+
+  // ─── Generate brand guideline HTML (for panel legacy download path) ──
+  if (message.action === "generateGuideHTML") {
+    try {
+      const html = generateBrandGuideHTML(message.kit);
+      sendResponse({ html });
+    } catch (err) {
+      console.warn("[BG] generateGuideHTML failed:", err);
+      sendResponse({ html: null });
+    }
+    return false;
+  }
 });
 
 // ─── Background Download Pipeline ────────────────────────────────────
@@ -390,7 +413,8 @@ function bgIsPlayable(buffer) {
  * @param {Object} msg - { assets, domData, platform, platformMeta, tabId }
  */
 async function handleDownloadKit(msg) {
-  const { assets, domData, platform, platformMeta, tabId } = msg;
+  const { assets, domData, platform, platformMeta, tabId, settings: dlSettings } = msg;
+  const compressImages = dlSettings?.compressImages || false;
   const total = assets.length;
   if (total === 0) return;
 
@@ -470,6 +494,19 @@ async function handleDownloadKit(msg) {
         const ext = bgGuessExt(asset, blobType);
         let fileName = bgBuildFilename(asset, ext);
 
+        // ── Image compression (if enabled in settings) ──
+        if (compressImages && asset.type === "image" && buffer.byteLength > 50 * 1024) {
+          const compressibleTypes = ["image/jpeg", "image/png", "image/webp"];
+          const mime = blobType.split(";")[0].trim().toLowerCase();
+          if (compressibleTypes.includes(mime) || ["jpg", "jpeg", "png", "webp"].includes(ext)) {
+            try {
+              buffer = await compressImageBuffer(buffer, mime || `image/${ext === "jpg" ? "jpeg" : ext}`);
+            } catch (e) {
+              console.warn("[BG downloadKit] Compression failed, using original:", e.message);
+            }
+          }
+        }
+
         const folderKey = asset.isLogo ? "logos" : asset.type;
         const targetFolder = asset.isLogo ? logosFolder : (folders[asset.type] || folders.image);
 
@@ -515,16 +552,38 @@ async function handleDownloadKit(msg) {
     // Zipping phase
     sendProgress({ phase: "zipping", completed, total, failed, bytes: totalBytes, detail: `Zipping ${completed - failed} files…` });
 
-    // Add brand.json
+    // ── Proactive font file resolution ──
+    // Fetch font files from Google Fonts CSS URLs and @font-face src URLs
+    // that may not have been captured by webRequest (cached before extension load).
+    if (domData?.fontInfo) {
+      sendProgress({ phase: "zipping", completed, total, failed, bytes: totalBytes, detail: "Resolving font files…" });
+      // Collect URLs already in the zip fonts/ folder to deduplicate
+      const existingFontUrls = assets.filter((a) => a.type === "font").map((a) => a.url);
+      try {
+        const resolvedFonts = await resolveFontFiles(domData.fontInfo, existingFontUrls);
+        for (const font of resolvedFonts) {
+          const name = fontFileName(font);
+          if (!usedNames.has("font")) usedNames.set("font", new Set());
+          const fontNameSet = usedNames.get("font");
+          if (!fontNameSet.has(name)) {
+            folders.font.file(name, font.buffer);
+            fontNameSet.add(name);
+            totalBytes += font.buffer.byteLength;
+          }
+        }
+        if (resolvedFonts.length > 0) {
+          sendProgress({ phase: "zipping", completed, total, failed, bytes: totalBytes, detail: `Resolved ${resolvedFonts.length} font file${resolvedFonts.length > 1 ? "s" : ""}` });
+        }
+      } catch (fontErr) {
+        console.warn("[BG downloadKit] Font resolution failed:", fontErr);
+      }
+    }
+
+    // Add brand.json + brand-guide.html
     if (domData) {
-      const brandKit = {
-        colors: (domData.colors || []).map((c) => ({ hex: c.hex, name: c.name || null, source: c.source })),
-        fonts: domData.fontInfo || { declared: [], used: [] },
-        meta: domData.pageMeta || {},
-        exportedAt: new Date().toISOString(),
-        assetCount: completed - failed,
-      };
+      const brandKit = buildBrandKit(domData, completed - failed);
       zip.file("brand.json", JSON.stringify(brandKit, null, 2));
+      zip.file("brand-guideline.html", generateBrandGuideHTML(brandKit));
     }
 
     // Add download report if there were failures
@@ -637,7 +696,7 @@ async function handleDownloadKit(msg) {
  * Panel sends { tabId, platform, platformScript, tabUrl } → background handles
  * all content script messaging, caches results, reports progress.
  */
-async function handleStartScan({ tabId, platform, platformScript, tabUrl }) {
+async function handleStartScan({ tabId, platform, platformScript, tabUrl, quickScan }) {
   // Guard: reject if scan already running for this tab
   const existing = scanCache.get(tabId);
   if (existing?.status === "scanning") {
@@ -659,7 +718,7 @@ async function handleStartScan({ tabId, platform, platformScript, tabUrl }) {
     let domData = null;
 
     // ── Phase 1: Platform-specific deep scan (scrolling + asset extraction) ──
-    if (platform && platformScript) {
+    if (platform && platformScript && !quickScan) {
       sendScanProgress({ phase: "platform-scan", detail: "Scrolling page…" });
       try {
         platformData = await chrome.tabs.sendMessage(tabId, { action: "deepScanPlatform" });
@@ -687,8 +746,8 @@ async function handleStartScan({ tabId, platform, platformScript, tabUrl }) {
     }
 
     // ── Phase 2: DOM analysis ──
-    sendScanProgress({ phase: "dom-scan", detail: platformData ? "Analyzing assets…" : "Scanning page…" });
-    const domAction = platformData ? "analyzeDOM" : "deepScan";
+    sendScanProgress({ phase: "dom-scan", detail: quickScan ? "Quick scan…" : (platformData ? "Analyzing assets…" : "Scanning page…") });
+    const domAction = (platformData || quickScan) ? "analyzeDOM" : "deepScan";
     try {
       domData = await chrome.tabs.sendMessage(tabId, { action: domAction });
     } catch {
@@ -738,6 +797,708 @@ async function handleStartScan({ tabId, platform, platformScript, tabUrl }) {
     clearInterval(keepaliveTimer);
     activeScanKeepalive.delete(tabId);
   }
+}
+
+// ─── Image Compression (Service Worker) ──────────────────────────────
+// Uses createImageBitmap + OffscreenCanvas — available in MV3 service workers
+
+const COMPRESS_MAX_PX = 2000;   // Max dimension on longest side
+const COMPRESS_QUALITY = 0.80;  // JPEG quality 0-1
+
+async function compressImageBuffer(buffer, mimeType) {
+  const blob = new Blob([buffer], { type: mimeType });
+  const bitmap = await createImageBitmap(blob);
+
+  let { width, height } = bitmap;
+
+  // Only resize if larger than threshold
+  if (width > COMPRESS_MAX_PX || height > COMPRESS_MAX_PX) {
+    const scale = COMPRESS_MAX_PX / Math.max(width, height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+  }
+
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close();
+
+  // Re-encode: PNG stays PNG (transparency), everything else → JPEG
+  const isPng = mimeType.includes("png");
+  const outputType = isPng ? "image/png" : "image/jpeg";
+  const quality = isPng ? undefined : COMPRESS_QUALITY;
+
+  const outBlob = await canvas.convertToBlob({ type: outputType, quality });
+  return await outBlob.arrayBuffer();
+}
+
+// ─── Font File Resolver ──────────────────────────────────────────────
+// Proactively fetches font files from URLs discovered by content.js.
+// Handles Google Fonts CSS → woff2 URL resolution, and direct @font-face URLs.
+// Returns array of { name, weight, style, format, buffer, url }
+
+const GFONTS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+async function resolveFontFiles(fontInfo, existingFontUrls) {
+  const declared = fontInfo?.declared || [];
+  if (declared.length === 0) return [];
+
+  const resolved = [];
+  const fetchedUrls = new Set(existingFontUrls || []);
+
+  // ── 1. Google Fonts — fetch the CSS, parse @font-face rules, get woff2 URLs ──
+  const googleCssUrls = new Set();
+  for (const font of declared) {
+    if (font.source === "google-fonts" && font.cssUrl) {
+      googleCssUrls.add(font.cssUrl);
+    }
+  }
+
+  for (const cssUrl of googleCssUrls) {
+    try {
+      // Must send a modern User-Agent or Google returns woff/ttf instead of woff2
+      const resp = await fetch(cssUrl, { headers: { "User-Agent": GFONTS_UA } });
+      if (!resp.ok) continue;
+      const cssText = await resp.text();
+
+      // Parse @font-face blocks from the CSS text
+      const faceRegex = /@font-face\s*\{([^}]+)\}/g;
+      let match;
+      while ((match = faceRegex.exec(cssText)) !== null) {
+        const block = match[1];
+        const familyMatch = block.match(/font-family:\s*['"]?([^;'"]+)['"]?\s*;/);
+        const urlMatch = block.match(/url\(([^)]+)\)/);
+        const weightMatch = block.match(/font-weight:\s*(\d+)/);
+        const styleMatch = block.match(/font-style:\s*(\w+)/);
+
+        if (!familyMatch || !urlMatch) continue;
+        const family = familyMatch[1].trim();
+        const url = urlMatch[1].replace(/['"]/g, "").trim();
+        const weight = weightMatch ? weightMatch[1] : "400";
+        const style = styleMatch ? styleMatch[1] : "normal";
+
+        if (fetchedUrls.has(url)) continue;
+        fetchedUrls.add(url);
+
+        try {
+          const fontResp = await fetch(url);
+          if (!fontResp.ok) continue;
+          const buffer = await fontResp.arrayBuffer();
+          const format = url.includes(".woff2") ? "woff2" : url.includes(".woff") ? "woff" : url.includes(".ttf") ? "ttf" : "woff2";
+          resolved.push({ name: family, weight, style, format, buffer, url });
+        } catch { /* skip individual font fetch failures */ }
+      }
+    } catch { /* skip CSS fetch failure */ }
+  }
+
+  // ── 2. Direct @font-face URLs (non-Google) ──
+  for (const font of declared) {
+    if (font.source !== "font-face" || !font.url) continue;
+    if (fetchedUrls.has(font.url)) continue;
+    fetchedUrls.add(font.url);
+
+    try {
+      const resp = await fetch(font.url);
+      if (!resp.ok) continue;
+      const buffer = await resp.arrayBuffer();
+      const ext = font.url.split("?")[0].split(".").pop().toLowerCase();
+      const format = ["woff2", "woff", "ttf", "otf"].includes(ext) ? ext : "woff2";
+      resolved.push({
+        name: font.name,
+        weight: font.weight || "400",
+        style: font.style || "normal",
+        format,
+        buffer,
+        url: font.url,
+      });
+    } catch { /* skip */ }
+  }
+
+  return resolved;
+}
+
+/** Build a clean filename for a resolved font: Inter-400.woff2, Roboto-700-italic.woff2 */
+function fontFileName(font) {
+  const safeName = font.name.replace(/[^a-zA-Z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const italic = font.style === "italic" ? "-italic" : "";
+  return `${safeName}-${font.weight}${italic}.${font.format}`;
+}
+
+// ─── Brand Kit Builder ───────────────────────────────────────────────
+
+function buildBrandKit(domData, assetCount) {
+  const meta = domData.pageMeta || {};
+  const colorSemantics = domData.colorSemantics || {};
+
+  return {
+    brand: {
+      name: meta.siteName || meta.title || meta.hostname || "",
+      url: meta.url || "",
+      description: meta.description || "",
+      ogImage: meta.ogImage || "",
+      favicons: domData.favicons || [{ url: meta.favicon, sizes: null, type: "icon" }],
+      socialLinks: domData.socialLinks || {},
+    },
+    colors: {
+      primary: colorSemantics.primary || null,
+      secondary: colorSemantics.secondary || null,
+      background: colorSemantics.background || "#ffffff",
+      text: colorSemantics.text || "#000000",
+      all: (domData.colors || []).map((c) => ({ hex: c.hex, name: c.name || null, source: c.source })),
+    },
+    typography: {
+      scale: domData.typographyScale || [],
+      fonts: domData.fontInfo || { declared: [], used: [] },
+    },
+    copy: domData.copy || { headlines: [], tagline: null, description: null },
+    ctas: domData.ctas || [],
+    structuredData: domData.structuredData || null,
+    exportedAt: new Date().toISOString(),
+    assetCount,
+  };
+}
+
+// ─── Brand Guide HTML Generator ──────────────────────────────────────
+
+function generateBrandGuideHTML(kit, { embedScript = true } = {}) {
+  const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const brandName = esc(kit.brand.name) || "Brand Kit";
+  const brandUrl = esc(kit.brand.url);
+  const exportDate = new Date(kit.exportedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+
+  // ── Auto-detect theme: dark brands → light page, light brands → dark page ──
+  function hexLuminance(hex) {
+    const c = (hex || "#000000").replace("#", "");
+    const r = parseInt(c.substr(0, 2), 16) / 255;
+    const g = parseInt(c.substr(2, 2), 16) / 255;
+    const b = parseInt(c.substr(4, 2), 16) / 255;
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+  const allHexes = (kit.colors.all || []).map((c) => c.hex).filter(Boolean);
+  const avgLum = allHexes.length > 0 ? allHexes.reduce((sum, h) => sum + hexLuminance(h), 0) / allHexes.length : 0.5;
+  const defaultTheme = avgLum < 0.4 ? "light" : "dark"; // dark brand colors → light page for contrast
+
+  // ── Ensure typography sample contrast ──
+  function contrastSafe(textColor, theme) {
+    if (!textColor) return "var(--text)";
+    const lum = hexLuminance(textColor);
+    if (theme === "dark" && lum < 0.25) return "var(--text)"; // dark text on dark bg → use theme text
+    if (theme === "light" && lum > 0.75) return "var(--text)"; // light text on light bg → use theme text
+    return textColor;
+  }
+
+  // ── Color swatches ──
+  const semanticColors = [
+    { label: "Primary", hex: kit.colors.primary },
+    { label: "Secondary", hex: kit.colors.secondary },
+    { label: "Background", hex: kit.colors.background },
+    { label: "Text", hex: kit.colors.text },
+  ].filter((c) => c.hex);
+
+  const allColorSwatches = (kit.colors.all || []).map((c) => {
+    const name = c.name ? esc(c.name) : "";
+    return `<div class="swatch" title="Select and copy">
+        <div class="swatch-color" style="background:${esc(c.hex)}"></div>
+        <input class="swatch-hex copyable" type="text" value="${esc(c.hex)}" readonly tabindex="0">
+        ${name ? `<span class="swatch-name">${name}</span>` : ""}
+      </div>`;
+  }).join("\n");
+
+  const semanticSwatches = semanticColors.map((c) => `
+      <div class="swatch semantic" title="Select and copy">
+        <div class="swatch-color" style="background:${esc(c.hex)}"></div>
+        <span class="swatch-label">${c.label}</span>
+        <input class="swatch-hex copyable" type="text" value="${esc(c.hex)}" readonly tabindex="0">
+      </div>`).join("\n");
+
+  // ── Typography scale ──
+  const typoRows = (kit.typography.scale || []).map((t) => {
+    const sample = t.element.startsWith("h") ? "The quick brown fox" : t.element === "button" ? "Click here" : "The quick brown fox jumps over the lazy dog";
+    // Use CSS custom properties for sample color with fallback — both themes get safe contrast
+    const safeDark = contrastSafe(t.color, "dark");
+    const safeLight = contrastSafe(t.color, "light");
+    // We use the theme-appropriate safe color via a class-based approach
+    const sampleColor = t.color || "var(--text)";
+    return `<div class="type-row">
+        <div class="type-meta">
+          <strong>${esc(t.element)}</strong>
+          <span>${esc(t.fontFamily)} · ${esc(t.fontWeight)} · ${esc(t.fontSize)} / ${esc(t.lineHeight)}</span>
+          ${t.letterSpacing && t.letterSpacing !== "0" ? `<span>tracking: ${esc(t.letterSpacing)}</span>` : ""}
+          ${t.textTransform ? `<span>transform: ${esc(t.textTransform)}</span>` : ""}
+        </div>
+        <div class="type-sample" style="font-size:${esc(t.fontSize)};font-weight:${esc(t.fontWeight)};line-height:${esc(t.lineHeight)};letter-spacing:${t.letterSpacing || "normal"};${t.textTransform ? "text-transform:" + esc(t.textTransform) + ";" : ""}" data-original-color="${esc(t.color || "")}">${sample}</div>
+      </div>`;
+  }).join("\n");
+
+  // ── Fonts list ──
+  const fontDeclared = (kit.typography.fonts?.declared || []).map((f) =>
+    `<li><strong>${esc(f.name)}</strong> <span class="tag">${esc(f.source)}</span> <input class="copyable inline" type="text" value="${esc(f.name)}" readonly tabindex="0"></li>`
+  ).join("\n");
+  const fontUsed = (kit.typography.fonts?.used || []).map((f) =>
+    `<li>${esc(f)} <input class="copyable inline" type="text" value="${esc(f)}" readonly tabindex="0"></li>`
+  ).join("\n");
+
+  // ── Copy bank ──
+  const headlines = (kit.copy.headlines || []).map((h) =>
+    `<div class="copy-item">
+        <input class="copyable copy-field" type="text" value="${esc(h)}" readonly tabindex="0">
+      </div>`
+  ).join("\n");
+
+  const tagline = kit.copy.tagline ? `<div class="copy-item">
+      <span class="copy-label">Tagline</span>
+      <input class="copyable copy-field" type="text" value="${esc(kit.copy.tagline)}" readonly tabindex="0">
+    </div>` : "";
+
+  const description = kit.copy.description ? `<div class="copy-item">
+      <span class="copy-label">Description</span>
+      <input class="copyable copy-field" type="text" value="${esc(kit.copy.description)}" readonly tabindex="0">
+    </div>` : "";
+
+  // ── CTA buttons ──
+  const ctaCards = (kit.ctas || []).map((cta) => {
+    const cssSpec = `background: ${cta.backgroundColor}; color: ${cta.color}; font-family: ${cta.fontFamily}, sans-serif; font-weight: ${cta.fontWeight}; font-size: ${cta.fontSize}; border-radius: ${cta.borderRadius}; padding: ${cta.padding};`;
+    return `<div class="cta-card">
+        <div class="cta-preview" style="background:${esc(cta.backgroundColor)};color:${esc(cta.color)};font-family:${esc(cta.fontFamily)},sans-serif;font-weight:${esc(cta.fontWeight)};font-size:${esc(cta.fontSize)};border-radius:${esc(cta.borderRadius)};padding:${esc(cta.padding)};display:inline-block">${esc(cta.text)}</div>
+        <div class="cta-specs">
+          <span>bg: <strong>${esc(cta.backgroundColor)}</strong></span>
+          <span>color: <strong>${esc(cta.color)}</strong></span>
+          <span>font: ${esc(cta.fontFamily)} ${esc(cta.fontWeight)} ${esc(cta.fontSize)}</span>
+          <span>radius: ${esc(cta.borderRadius)}</span>
+          <span>padding: ${esc(cta.padding)}</span>
+        </div>
+        <input class="copyable cta-css" type="text" value="${esc(cssSpec)}" readonly tabindex="0" title="Full CSS — click to select">
+      </div>`;
+  }).join("\n");
+
+  // ── Social links ──
+  const socialEntries = Object.entries(kit.brand.socialLinks || {}).filter(([, url]) => url);
+  const socialLinks = socialEntries.map(([platform, url]) =>
+    `<a href="${esc(url)}" class="social-link" target="_blank" rel="noopener">${esc(platform)}</a>`
+  ).join("\n");
+
+  // ── Structured data ──
+  let structuredBlock = "";
+  if (kit.structuredData && kit.structuredData.length > 0) {
+    const items = kit.structuredData.map((d) => {
+      const lines = [`<strong>${esc(d.type)}</strong>`];
+      if (d.name) lines.push(`Name: ${esc(d.name)}`);
+      if (d.url) lines.push(`URL: <a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url)}</a>`);
+      if (d.description) lines.push(`Desc: ${esc(d.description)}`);
+      if (d.sameAs) lines.push(`Links: ${d.sameAs.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join(", ")}`);
+      return `<div class="structured-item">${lines.join("<br>")}</div>`;
+    }).join("\n");
+    structuredBlock = `<section><h2>Structured Data (JSON-LD)</h2>${items}</section>`;
+  }
+
+  // ── Asset summary ──
+  const assetSummary = kit.assetCount > 0
+    ? `${kit.assetCount} asset${kit.assetCount !== 1 ? "s" : ""} in this kit`
+    : "brand data only — no media assets";
+
+  // ── Quick summary (plain text for sales) ──
+  const summaryLines = [];
+  summaryLines.push(`${kit.brand.name || "Brand"} — ${(kit.brand.url || "").replace(/^https?:\/\//, "")}`);
+  if (kit.brand.description) { summaryLines.push(""); summaryLines.push(kit.brand.description); }
+  const colorParts = [];
+  if (kit.colors.primary) colorParts.push(`Primary: ${kit.colors.primary}`);
+  if (kit.colors.secondary) colorParts.push(`Secondary: ${kit.colors.secondary}`);
+  if (kit.colors.background) colorParts.push(`Background: ${kit.colors.background}`);
+  if (kit.colors.text) colorParts.push(`Text: ${kit.colors.text}`);
+  if (colorParts.length > 0) summaryLines.push("Colors: " + colorParts.join("  ·  "));
+  const declFonts = kit.typography.fonts?.declared || [];
+  if (declFonts.length > 0) summaryLines.push("Fonts: " + declFonts.map((f) => f.name).join(", "));
+  const firstCta = (kit.ctas || [])[0];
+  if (firstCta) summaryLines.push(`CTA style: ${firstCta.borderRadius !== "0px" ? "rounded" : "sharp"}, ${Number(firstCta.fontWeight) >= 600 ? "bold" : "regular"}, ${firstCta.backgroundColor} on ${firstCta.color}`);
+  const quickSummaryText = summaryLines.join("\n");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${brandName} — Brand Guideline</title>
+<style>
+  /* ── Pure CSS theme toggle (works without JS — CSP-safe) ──
+     Checkbox at top of <body> drives all theme styles via :checked ~ selectors.
+     JS enhances with localStorage persistence when available (file:// context). */
+  .theme-checkbox { display: none; }
+
+  /* ── Dark theme (default when unchecked) ── */
+  body {
+    --bg: #0f0e17; --bg2: #1a1929; --bg3: #252438; --card: #1e1d30;
+    --text: #fffffe; --text2: #a7a9be; --muted: #6b6d82;
+    --accent: #ff6e9c; --accent2: #c77dff; --border: #2e2d44;
+    --swatch-border: #3a3955; --sample-text: var(--text);
+  }
+  /* ── Light theme (when checked) ── */
+  .theme-checkbox:checked ~ .page {
+    --bg: #f8f8fb; --bg2: #f0eff5; --bg3: #e8e7f0; --card: #ffffff;
+    --text: #1a1a2e; --text2: #4a4a68; --muted: #8888a4;
+    --accent: #e0457b; --accent2: #9b59b6; --border: #d8d8e6;
+    --swatch-border: #ccccd8; --sample-text: var(--text);
+  }
+
+  :root { --radius: 10px; --font: Inter, -apple-system, system-ui, sans-serif; --mono: "SF Mono", "Fira Code", monospace; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+  .page { background: var(--bg); color: var(--text); min-height: 100vh; transition: background 0.25s, color 0.25s; }
+  .container { max-width: 800px; margin: 0 auto; padding: 40px 24px 60px; }
+
+  /* Header */
+  .brand-header { margin-bottom: 40px; padding-bottom: 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+  .brand-header-left { flex: 1; min-width: 0; }
+  .brand-header-left h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; line-height: 1.25; }
+  .brand-header-left h1 em { color: var(--accent); font-style: normal; }
+  .brand-header .meta { font-size: 13px; color: var(--muted); font-family: var(--mono); display: flex; gap: 12px; flex-wrap: wrap; }
+  .brand-header .meta a { color: var(--accent); text-decoration: none; }
+
+  /* Theme toggle label (pure CSS) */
+  .theme-label { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; background: var(--card); border: 1px solid var(--border); border-radius: 20px; cursor: pointer; font-size: 16px; line-height: 1; transition: all 0.2s; flex-shrink: 0; user-select: none; }
+  .theme-label:hover { border-color: var(--accent); }
+  .theme-label .icon-sun { display: none; }
+  .theme-label .icon-moon { display: inline; }
+  .theme-checkbox:checked ~ .page .theme-label .icon-sun { display: inline; }
+  .theme-checkbox:checked ~ .page .theme-label .icon-moon { display: none; }
+
+  /* Sections */
+  section { margin-bottom: 36px; }
+  h2 { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+
+  /* Color swatches */
+  .color-grid { display: flex; flex-wrap: wrap; gap: 12px; }
+  .swatch { text-align: center; transition: transform 0.15s; width: 72px; }
+  .swatch:hover { transform: translateY(-2px); }
+  .swatch-color { width: 72px; height: 72px; border-radius: var(--radius); border: 2px solid var(--swatch-border); margin-bottom: 6px; }
+  .swatch.semantic { width: 100px; }
+  .swatch.semantic .swatch-color { width: 100px; height: 60px; border-radius: 8px; }
+  .swatch-hex { display: block; font-size: 11px; font-family: var(--mono); color: var(--text2); word-break: break-all; }
+  .swatch-name { display: block; font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .swatch-label { display: block; font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+  .color-semantic { margin-bottom: 20px; }
+
+  /* Typography */
+  .type-row { background: var(--card); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 10px; border: 1px solid var(--border); transition: background 0.25s, border-color 0.25s; }
+  .type-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-bottom: 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .type-meta strong { color: var(--accent); text-transform: uppercase; }
+  .type-sample { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+
+  /* Fonts list */
+  .font-list { list-style: none; }
+  .font-list li { padding: 8px 12px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; font-size: 13px; display: flex; align-items: center; gap: 10px; transition: background 0.25s; }
+  .tag { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent2); background: rgba(199, 125, 255, 0.12); padding: 2px 6px; border-radius: 4px; }
+
+  /* Copy bank */
+  .copy-item { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 8px; transition: border-color 0.15s, background 0.25s; }
+  .copy-item:hover { border-color: var(--accent); }
+  .copy-label { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; }
+
+  /* CTA cards */
+  .cta-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 12px; transition: background 0.25s; }
+  .cta-preview { margin-bottom: 12px; cursor: default; }
+  .cta-specs { font-size: 11px; font-family: var(--mono); color: var(--muted); display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
+  .cta-specs strong { color: var(--text2); }
+
+  /* Copyable input fields (CSP-safe: user selects with click, copies with Cmd/Ctrl+C) */
+  .copyable { background: transparent; border: none; color: var(--text2); font-family: var(--mono); font-size: 11px; outline: none; cursor: text; width: auto; padding: 0; }
+  .copyable:focus { color: var(--accent); }
+  .copyable.copy-field { width: 100%; font-size: 14px; color: var(--text); font-family: var(--font); padding: 0; }
+  .copyable.copy-field:focus { color: var(--accent); }
+  .copyable.inline { max-width: 120px; }
+  .copyable.cta-css { width: 100%; font-size: 10px; color: var(--muted); padding: 6px 0; border-top: 1px solid var(--border); margin-top: 4px; }
+  .copyable.cta-css:focus { color: var(--accent); }
+
+  /* Social */
+  .social-links { display: flex; flex-wrap: wrap; gap: 8px; }
+  .social-link { display: inline-block; padding: 6px 14px; background: var(--bg3); border: 1px solid var(--border); border-radius: 20px; color: var(--text2); text-decoration: none; font-size: 12px; font-weight: 500; text-transform: capitalize; transition: all 0.15s; }
+  .social-link:hover { border-color: var(--accent); color: var(--accent); background: rgba(255, 110, 156, 0.08); }
+
+  /* Structured data */
+  .structured-item { font-size: 12px; color: var(--text2); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; line-height: 1.7; transition: background 0.25s; }
+  .structured-item a { color: var(--accent); text-decoration: none; }
+  .structured-item a:hover { text-decoration: underline; }
+
+  /* Toast (JS-enhanced only — hidden when JS blocked) */
+  .toast-notify { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--card); color: var(--text); border: 1px solid var(--accent); padding: 8px 20px; border-radius: var(--radius); font-size: 12px; font-weight: 500; opacity: 0; transition: all 0.25s ease; pointer-events: none; z-index: 100; }
+  .toast-notify.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* Footer */
+  .guide-footer { text-align: center; padding-top: 24px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+  .guide-footer a { color: var(--accent); text-decoration: none; }
+
+  /* Copy hint badge */
+  .copy-hint-banner { font-size: 10px; color: var(--muted); text-align: center; margin-bottom: 24px; font-family: var(--mono); letter-spacing: 0.3px; }
+
+  /* Quick Summary */
+  .quick-summary { background: var(--card); border: 1px solid var(--accent); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 32px; }
+  .quick-summary-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .quick-summary-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: var(--accent); }
+  .quick-summary-text { font-size: 13px; line-height: 1.7; color: var(--text2); font-family: var(--mono); white-space: pre-wrap; word-break: break-word; margin: 0; }
+  .btn-summary-copy { background: var(--accent); color: #fff; border: none; padding: 6px 14px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+  .btn-summary-copy:hover { opacity: 0.85; }
+
+  /* Export section */
+  .export-section { margin-top: 8px; }
+  .export-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+  .btn-export { background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 10px 18px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: Inter, -apple-system, system-ui, sans-serif; }
+  .btn-export:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-export-secondary { background: transparent; border-style: dashed; }
+
+  /* Responsive */
+  @media (max-width: 500px) {
+    .container { padding: 20px 16px 40px; }
+    .swatch { width: 56px; }
+    .swatch-color { width: 56px; height: 56px; }
+    .swatch.semantic { width: 72px; }
+    .swatch.semantic .swatch-color { width: 72px; height: 48px; }
+    .type-sample { font-size: 14px !important; }
+    .export-buttons { flex-direction: column; }
+  }
+
+  /* Print / PDF */
+  @media print {
+    body { background: #fff !important; color: #1a1a2e !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .page { background: #fff !important; color: #1a1a2e !important; }
+    .container { max-width: 100%; padding: 0; }
+    .theme-label, .copy-hint-banner, .export-section, .btn-summary-copy, .copy-btn, .copy-hint, .toast-notify { display: none !important; }
+    .brand-header { page-break-after: avoid; }
+    section { page-break-inside: avoid; }
+    .swatch-color { border-color: #ccc !important; }
+    .quick-summary { border-color: #ccc; }
+    a { color: inherit !important; text-decoration: underline; }
+    h2 { color: #666 !important; border-color: #ddd !important; }
+    .type-row, .cta-card, .font-list li, .copy-item, .structured-item { background: #f8f8f8 !important; border-color: #ddd !important; }
+    .social-link { background: #f0f0f0 !important; border-color: #ddd !important; color: #333 !important; }
+  }
+</style>
+</head>
+<body>
+<!-- Theme toggle: pure CSS checkbox drives :checked ~ .page selectors -->
+<input type="checkbox" class="theme-checkbox" id="themeToggle" ${defaultTheme === "light" ? "checked" : ""}>
+<div class="page">
+<div class="container">
+
+  <header class="brand-header">
+    <div class="brand-header-left">
+      <h1>${brandName}<em>.</em></h1>
+      <div class="meta">
+        ${brandUrl ? `<a href="${brandUrl}" target="_blank" rel="noopener">${esc(kit.brand.url.replace(/^https?:\/\//, ""))}</a>` : ""}
+        <span>${exportDate}</span>
+        <span>${assetSummary}</span>
+      </div>
+    </div>
+    <label class="theme-label" for="themeToggle" title="Switch light/dark theme"><span class="icon-moon">🌙</span><span class="icon-sun">☀️</span></label>
+  </header>
+
+  <div class="copy-hint-banner">click any value to select · ${"{Cmd}"}+C to copy</div>
+
+  <div class="quick-summary">
+    <div class="quick-summary-header">
+      <span class="quick-summary-label">📋 QUICK SUMMARY</span>
+      <button class="btn-summary-copy" id="copySummary">Copy to clipboard</button>
+    </div>
+    <pre class="quick-summary-text">${esc(quickSummaryText)}</pre>
+  </div>
+
+  ${semanticColors.length > 0 ? `<section>
+    <h2>Colors</h2>
+    <div class="color-grid color-semantic">${semanticSwatches}</div>
+    ${kit.colors.all.length > 0 ? `<div class="color-grid" style="margin-top:16px">${allColorSwatches}</div>` : ""}
+  </section>` : ""}
+
+  ${(kit.typography.scale || []).length > 0 ? `<section>
+    <h2>Typography</h2>
+    ${typoRows}
+  </section>` : ""}
+
+  ${fontDeclared || fontUsed ? `<section>
+    <h2>Fonts</h2>
+    ${fontDeclared ? `<ul class="font-list">${fontDeclared}</ul>` : ""}
+    ${fontUsed ? `<p style="font-size:11px;color:var(--muted);margin-top:12px;margin-bottom:6px">Also detected in computed styles:</p><ul class="font-list">${fontUsed}</ul>` : ""}
+  </section>` : ""}
+
+  ${headlines || tagline || description ? `<section>
+    <h2>Copy</h2>
+    ${headlines}
+    ${tagline}
+    ${description}
+  </section>` : ""}
+
+  ${ctaCards ? `<section>
+    <h2>Call-to-Action Buttons</h2>
+    ${ctaCards}
+  </section>` : ""}
+
+  ${socialLinks ? `<section>
+    <h2>Social</h2>
+    <div class="social-links">${socialLinks}</div>
+  </section>` : ""}
+
+  ${structuredBlock}
+
+  <section class="export-section">
+    <h2>Export</h2>
+    <div class="export-buttons">
+      <button class="btn-export" id="exportCSS" title="CSS custom properties for web projects">⬇ CSS Tokens</button>
+      <button class="btn-export" id="exportDesignTokens" title="W3C Design Tokens JSON for Figma / Style Dictionary">⬇ Design Tokens</button>
+      <button class="btn-export" id="exportJSON" title="Full brand kit data — colors, fonts, typography, CTAs, copy, social">⬇ Brand JSON</button>
+      <button class="btn-export" id="exportBrief" title="Markdown brand brief for AI agents">⬇ Brand Brief</button>
+      <button class="btn-export" id="exportASE" title="Adobe Swatch Exchange — import colors into Photoshop, Illustrator, InDesign">⬇ Adobe Swatches</button>
+      <button class="btn-export btn-export-secondary" id="printPDF" title="Print or save as PDF">🖨 Print / PDF</button>
+    </div>
+  </section>
+
+  <footer class="guide-footer">
+    <p>Extracted by <strong>Net Assets Scraper</strong> v2.7 · ${exportDate}</p>
+  </footer>
+
+</div>
+</div>
+
+<div class="toast-notify" id="toast"></div>
+
+${embedScript ? `<!-- JS interactivity — works in file:// (no CSP). For blob: preview, injected via chrome.scripting instead. -->
+<script>
+(function() {
+  var kit = ${JSON.stringify(kit).replace(/<\//g, "<\\/")};
+  var toast = document.getElementById('toast');
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toast._tid);
+    toast._tid = setTimeout(function() { toast.classList.remove('show'); }, 1800);
+  }
+  function downloadFile(content, filename, mimeType) {
+    var blob = new Blob([content], { type: mimeType });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(function() { URL.revokeObjectURL(url); a.remove(); }, 100);
+    showToast('Downloaded: ' + filename);
+  }
+  // Select-all + clipboard copy on copyable inputs
+  document.querySelectorAll('.copyable').forEach(function(el) {
+    el.addEventListener('click', function() { this.select(); });
+    el.addEventListener('focus', function() { this.select(); });
+    el.addEventListener('copy', function() {
+      showToast('Copied: ' + this.value.substring(0, 40));
+    });
+  });
+  // Quick summary copy
+  var summaryBtn = document.getElementById('copySummary');
+  if (summaryBtn) {
+    summaryBtn.addEventListener('click', function() {
+      var text = document.querySelector('.quick-summary-text').textContent;
+      navigator.clipboard.writeText(text).then(function() { showToast('Summary copied!'); }, function() { showToast('Select and Cmd+C to copy'); });
+    });
+  }
+  // Theme persistence via localStorage
+  var cb = document.getElementById('themeToggle');
+  var stored = localStorage.getItem('nas-guide-theme');
+  if (stored === 'dark') cb.checked = false;
+  else if (stored === 'light') cb.checked = true;
+  cb.addEventListener('change', function() {
+    localStorage.setItem('nas-guide-theme', cb.checked ? 'light' : 'dark');
+  });
+  // ── Token generators ──
+  function generateBrandTokensCSS(k) {
+    var l = ['/* Brand Tokens */', '/* ' + (k.brand.name||'Brand') + ' · ' + (k.brand.url||'') + ' */', '', ':root {'];
+    l.push('  /* Colors */');
+    if(k.colors.primary) l.push('  --brand-primary: '+k.colors.primary+';');
+    if(k.colors.secondary) l.push('  --brand-secondary: '+k.colors.secondary+';');
+    if(k.colors.background) l.push('  --brand-bg: '+k.colors.background+';');
+    if(k.colors.text) l.push('  --brand-text: '+k.colors.text+';');
+    (k.colors.all||[]).forEach(function(c,i){ l.push('  --brand-color-'+(i+1)+': '+c.hex+';'+(c.name?' /* '+c.name+' */':'')); });
+    var sc=k.typography.scale||[], dc=k.typography.fonts&&k.typography.fonts.declared||[];
+    if(dc.length||sc.length){l.push('');l.push('  /* Typography */');}
+    var hf=dc[0]||sc.find(function(t){return t.element&&t.element.startsWith('h')});
+    var bf=sc.find(function(t){return t.element==='p'||t.element==='body'});
+    if(hf)l.push('  --font-heading: "'+( hf.name||hf.fontFamily)+'", sans-serif;');
+    if(bf)l.push('  --font-body: "'+bf.fontFamily+'", sans-serif;');
+    sc.forEach(function(t){var tag=t.element.replace(/[^a-z0-9]/g,'');l.push('  --font-size-'+tag+': '+t.fontSize+';');l.push('  --line-height-'+tag+': '+t.lineHeight+';');l.push('  --font-weight-'+tag+': '+t.fontWeight+';');});
+    var ctas=k.ctas||[];if(ctas.length){var c=ctas[0];l.push('');l.push('  /* CTA */');l.push('  --cta-bg: '+c.backgroundColor+';');l.push('  --cta-color: '+c.color+';');l.push('  --cta-font: "'+c.fontFamily+'", sans-serif;');l.push('  --cta-weight: '+c.fontWeight+';');l.push('  --cta-size: '+c.fontSize+';');l.push('  --cta-radius: '+c.borderRadius+';');l.push('  --cta-padding: '+c.padding+';');}
+    l.push('}'); return l.join('\\n');
+  }
+  function generateDesignTokensJSON(k) {
+    var t={color:{}};
+    if(k.colors.primary)t.color.primary={$value:k.colors.primary,$type:'color'};
+    if(k.colors.secondary)t.color.secondary={$value:k.colors.secondary,$type:'color'};
+    if(k.colors.background)t.color.background={$value:k.colors.background,$type:'color'};
+    if(k.colors.text)t.color.text={$value:k.colors.text,$type:'color'};
+    (k.colors.all||[]).forEach(function(c,i){var key=c.name?c.name.toLowerCase().replace(/[^a-z0-9]+/g,'-'):'palette-'+(i+1);t.color[key]={$value:c.hex,$type:'color'};});
+    var dc=k.typography.fonts&&k.typography.fonts.declared||[];
+    if(dc.length){t.fontFamily={};t.fontFamily.heading={$value:dc[0].name,$type:'fontFamily'};t.fontFamily.body={$value:(dc[1]||dc[0]).name,$type:'fontFamily'};}
+    var sc=k.typography.scale||[];
+    if(sc.length){t.fontSize={};t.lineHeight={};t.fontWeight={};sc.forEach(function(s){var key=s.element.replace(/[^a-z0-9]/g,'');t.fontSize[key]={$value:s.fontSize,$type:'dimension'};t.lineHeight[key]={$value:s.lineHeight,$type:'dimension'};t.fontWeight[key]={$value:s.fontWeight,$type:'fontWeight'};});}
+    var ctas=k.ctas||[];if(ctas.length){var c=ctas[0];t.cta={background:{$value:c.backgroundColor,$type:'color'},color:{$value:c.color,$type:'color'},borderRadius:{$value:c.borderRadius,$type:'dimension'},padding:{$value:c.padding,$type:'dimension'},fontFamily:{$value:c.fontFamily,$type:'fontFamily'},fontWeight:{$value:c.fontWeight,$type:'fontWeight'},fontSize:{$value:c.fontSize,$type:'dimension'}};}
+    return JSON.stringify(t,null,2);
+  }
+  function generateBrandBriefMD(k) {
+    var l=['# Brand Brief: '+(k.brand.name||'Unknown'),'','> Auto-extracted by Net Assets Scraper · '+new Date(k.exportedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}),'','## Identity'];
+    if(k.brand.url)l.push('- **URL**: '+k.brand.url);
+    if(k.brand.description)l.push('- **Description**: '+k.brand.description);
+    l.push('','## Colors','','| Role | Hex |','|------|-----|');
+    if(k.colors.primary)l.push('| Primary | \`'+k.colors.primary+'\` |');
+    if(k.colors.secondary)l.push('| Secondary | \`'+k.colors.secondary+'\` |');
+    if(k.colors.background)l.push('| Background | \`'+k.colors.background+'\` |');
+    if(k.colors.text)l.push('| Text | \`'+k.colors.text+'\` |');
+    (k.colors.all||[]).slice(0,12).forEach(function(c){l.push('| '+(c.name||'Palette')+' | \`'+c.hex+'\` |');});
+    l.push('');
+    var dc=k.typography.fonts&&k.typography.fonts.declared||[],sc=k.typography.scale||[];
+    if(dc.length||sc.length){l.push('## Typography','');if(dc.length)l.push('**Fonts**: '+dc.map(function(f){return f.name+' ('+f.source+')';}).join(', '),'');if(sc.length){l.push('| Element | Font | Weight | Size | Line Height |','|---------|------|--------|------|-------------|');sc.forEach(function(t){l.push('| '+t.element+' | '+t.fontFamily+' | '+t.fontWeight+' | '+t.fontSize+' | '+t.lineHeight+' |');});l.push('');}}
+    var ctas=k.ctas||[];if(ctas.length){l.push('## Call-to-Action Buttons','');ctas.forEach(function(c){l.push('- **"'+c.text+'"** — bg: \`'+c.backgroundColor+'\`, color: \`'+c.color+'\`, font: '+c.fontFamily+' '+c.fontWeight+' '+c.fontSize+', radius: '+c.borderRadius+', padding: '+c.padding);});l.push('');}
+    var cp=k.copy||{},hl=cp.headlines||[];if(hl.length||cp.tagline||cp.description){l.push('## Copy Bank','');if(cp.tagline)l.push('- **Tagline**: "'+cp.tagline+'"');if(cp.description)l.push('- **Description**: "'+cp.description+'"');if(hl.length){l.push('- **Headlines**:');hl.slice(0,10).forEach(function(h){l.push('  - "'+h+'"');});}l.push('');}
+    var so=Object.entries(k.brand.socialLinks||{}).filter(function(e){return e[1];});if(so.length){l.push('## Social Presence','');so.forEach(function(e){l.push('- **'+e[0]+'**: '+e[1]);});l.push('');}
+    return l.join('\\n');
+  }
+  // ── ASE (Adobe Swatch Exchange) generator ──
+  function generateASE(k) {
+    var colors = [];
+    if(k.colors.primary) colors.push({name:'Primary',hex:k.colors.primary});
+    if(k.colors.secondary) colors.push({name:'Secondary',hex:k.colors.secondary});
+    if(k.colors.background) colors.push({name:'Background',hex:k.colors.background});
+    if(k.colors.text) colors.push({name:'Text',hex:k.colors.text});
+    (k.colors.all||[]).slice(0,50).forEach(function(c){colors.push({name:c.name||c.hex,hex:c.hex});});
+    if(!colors.length) return null;
+    function hexToRGB(h){h=(h||'#000000').replace('#','');return[parseInt(h.substr(0,2),16)/255,parseInt(h.substr(2,2),16)/255,parseInt(h.substr(4,2),16)/255];}
+    var groupName=(k.brand.name||'Brand')+' Colors';
+    var totalSize=12;
+    totalSize+=2+4+(2+(groupName.length+1)*2);
+    colors.forEach(function(c){totalSize+=2+4+(2+(c.name.length+1)*2)+4+12+2;});
+    totalSize+=2+4;
+    var buf=new ArrayBuffer(totalSize),view=new DataView(buf),off=0;
+    function w32(v){view.setUint32(off,v,false);off+=4;}
+    function w16(v){view.setUint16(off,v,false);off+=2;}
+    function wF(v){view.setFloat32(off,v,false);off+=4;}
+    function wStr(s){for(var i=0;i<s.length;i++){view.setUint16(off,s.charCodeAt(i),false);off+=2;}view.setUint16(off,0,false);off+=2;}
+    view.setUint8(off++,0x41);view.setUint8(off++,0x53);view.setUint8(off++,0x45);view.setUint8(off++,0x46);
+    w16(1);w16(0);w32(colors.length+2);
+    w16(0xC001);w32(2+(groupName.length+1)*2);w16(groupName.length+1);wStr(groupName);
+    colors.forEach(function(c){
+      w16(0x0001);w32(2+(c.name.length+1)*2+4+12+2);w16(c.name.length+1);wStr(c.name);
+      view.setUint8(off++,0x52);view.setUint8(off++,0x47);view.setUint8(off++,0x42);view.setUint8(off++,0x20);
+      var rgb=hexToRGB(c.hex);wF(rgb[0]);wF(rgb[1]);wF(rgb[2]);w16(0);
+    });
+    w16(0xC002);w32(0);
+    return buf;
+  }
+  // ── Export button wiring ──
+  var safeName = (kit.brand.name||'brand').toLowerCase().replace(/[^a-z0-9]+/g,'-');
+  document.getElementById('exportCSS').addEventListener('click', function() { downloadFile(generateBrandTokensCSS(kit), safeName+'-tokens.css', 'text/css'); });
+  document.getElementById('exportDesignTokens').addEventListener('click', function() { downloadFile(generateDesignTokensJSON(kit), safeName+'-tokens.json', 'application/json'); });
+  document.getElementById('exportJSON').addEventListener('click', function() { downloadFile(JSON.stringify(kit,null,2), safeName+'-brand.json', 'application/json'); });
+  document.getElementById('exportBrief').addEventListener('click', function() { downloadFile(generateBrandBriefMD(kit), safeName+'-brand-brief.md', 'text/markdown'); });
+  document.getElementById('exportASE').addEventListener('click', function() {
+    var aseData = generateASE(kit);
+    if(aseData){var blob=new Blob([aseData],{type:'application/octet-stream'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download=safeName+'-colors.ase';document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(url);a.remove();},100);showToast('Downloaded: '+safeName+'-colors.ase');}
+    else{showToast('No colors to export');}
+  });
+  document.getElementById('printPDF').addEventListener('click', function() { window.print(); });
+})();
+</script>` : ""}
+</body>
+</html>`;
 }
 
 // ─── Install log ─────────────────────────────────────────────────────

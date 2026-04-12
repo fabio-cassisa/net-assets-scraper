@@ -12,6 +12,10 @@ let currentTab = "all";   // Active filter tab
 let hideSmall = true;     // Filter toggle state
 let hideUI = true;        // Filter UI elements (nav icons, social icons, etc.)
 
+// ─── Settings (persisted via chrome.storage.local) ───────────────────
+const SETTINGS_DEFAULTS = { compressImages: false, autoSelectLogos: true, minImageSize: 48, quickScan: false };
+let settings = { ...SETTINGS_DEFAULTS };
+
 // ─── File type constants ─────────────────────────────────────────────
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "svg", "avif", "ico", "bmp"]);
 const VIDEO_EXTS = new Set(["mp4", "webm", "ogg", "avi", "mov", "wmv", "m4v", "mkv"]);
@@ -88,6 +92,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initDownload();
   initScan();
   initFeedWarning();
+  initSettings();
   scanCurrentTab();
 });
 
@@ -553,7 +558,7 @@ function getFilteredAssets() {
       // Known tiny dimensions from DOM
       const w = a.domWidth || 0;
       const h = a.domHeight || 0;
-      if (w > 0 && h > 0 && w <= TINY_DIMENSION && h <= TINY_DIMENSION) return false;
+      if (w > 0 && h > 0 && w <= settings.minImageSize && h <= settings.minImageSize) return false;
       return true;
     });
   }
@@ -842,6 +847,7 @@ function initControls() {
           tabUrl: tab.url,
           platform: detectedPlatform,
           platformScript: (detectedPlatform && PLATFORM_SCRIPTS[detectedPlatform]) || null,
+          quickScan: settings.quickScan,
         });
         // Results arrive via scanProgress listener in initScan()
         // UI unlock happens there too — nothing more to do here
@@ -891,7 +897,7 @@ function renderBadges() {
       if (asset.contentLength > 0 && asset.contentLength < SIZE_THRESHOLD) continue;
       const w = asset.domWidth || 0;
       const h = asset.domHeight || 0;
-      if (w > 0 && h > 0 && w <= TINY_DIMENSION && h <= TINY_DIMENSION) continue;
+      if (w > 0 && h > 0 && w <= settings.minImageSize && h <= settings.minImageSize) continue;
     }
     if (hideUI) {
       if (asset.isUI) continue;
@@ -1177,8 +1183,15 @@ function applyScanResults(pData, dData, netResources) {
   platformData = pData;
   domData = dData;
   allAssets = enrichAssets(netResources || [], dData?.imageContext || [], pData);
+
+  // Auto-select logos if enabled (before rendering so cards show as selected)
+  if (settings.autoSelectLogos) {
+    allAssets.filter((a) => a.isLogo).forEach((a) => selectedUrls.add(a.url));
+  }
+
   renderGrid();
   renderBadges();
+  updateDownloadBar();
   if (dData) {
     renderColors(dData.colors);
     renderFonts(dData.fontInfo);
@@ -1188,6 +1201,12 @@ function applyScanResults(pData, dData, netResources) {
     renderPlatformMeta(pData.platformMeta, detectedPlatform);
   }
   checkFeedWarning();
+
+  // Enable guideline button now that we have scan data
+  const guidelineBtn = document.getElementById("openGuidelineBtn");
+  if (guidelineBtn && dData) {
+    guidelineBtn.disabled = false;
+  }
 }
 
 function initScan() {
@@ -1303,10 +1322,18 @@ async function downloadKit() {
         colors: domData.colors,
         fontInfo: domData.fontInfo,
         pageMeta: domData.pageMeta,
+        copy: domData.copy,
+        ctas: domData.ctas,
+        typographyScale: domData.typographyScale,
+        socialLinks: domData.socialLinks,
+        structuredData: domData.structuredData,
+        favicons: domData.favicons,
+        colorSemantics: domData.colorSemantics,
       } : null,
       platform: detectedPlatform,
       platformMeta: platformData?.platformMeta || null,
       tabId: tab.id,
+      settings,
     });
 
     // Progress is now handled by the onMessage listener in initDownload().
@@ -1529,20 +1556,45 @@ async function downloadKitInPanel() {
     progressText.textContent = `Zipping ${completed} files…`;
     progressFill.style.width = "100%";
 
-    // Add brand.json with colors, fonts, and meta
+    // Add brand.json — mirror background.js buildBrandKit() structure
     if (domData) {
+      const meta = domData.pageMeta || {};
+      const colorSemantics = domData.colorSemantics || {};
       const brandKit = {
-        colors: (domData.colors || []).map((c) => ({
-          hex: c.hex,
-          name: c.name || null,
-          source: c.source,
-        })),
-        fonts: domData.fontInfo || { declared: [], used: [] },
-        meta: domData.pageMeta || {},
+        brand: {
+          name: meta.siteName || meta.title || meta.hostname || "",
+          url: meta.url || "",
+          description: meta.description || "",
+          ogImage: meta.ogImage || "",
+          favicons: domData.favicons || [{ url: meta.favicon, sizes: null, type: "icon" }],
+          socialLinks: domData.socialLinks || {},
+        },
+        colors: {
+          primary: colorSemantics.primary || null,
+          secondary: colorSemantics.secondary || null,
+          background: colorSemantics.background || "#ffffff",
+          text: colorSemantics.text || "#000000",
+          all: (domData.colors || []).map((c) => ({ hex: c.hex, name: c.name || null, source: c.source })),
+        },
+        typography: {
+          scale: domData.typographyScale || [],
+          fonts: domData.fontInfo || { declared: [], used: [] },
+        },
+        copy: domData.copy || { headlines: [], tagline: null, description: null },
+        ctas: domData.ctas || [],
+        structuredData: domData.structuredData || null,
         exportedAt: new Date().toISOString(),
-        assetCount: completed,
+        assetCount: completed - failed,
       };
       zip.file("brand.json", JSON.stringify(brandKit, null, 2));
+
+      // Request guideline HTML from background (generateBrandGuideHTML lives there)
+      try {
+        const resp = await chrome.runtime.sendMessage({ action: "generateGuideHTML", kit: brandKit });
+        if (resp?.html) zip.file("brand-guideline.html", resp.html);
+      } catch (e) {
+        console.warn("[downloadKit] Could not generate guideline HTML:", e);
+      }
     }
 
     // Remove empty folders
@@ -1841,5 +1893,110 @@ function renderPlatformMeta(meta, platform) {
     div.appendChild(label);
     div.appendChild(value);
     container.appendChild(div);
+  }
+}
+
+// ─── Settings ────────────────────────────────────────────────────────
+
+function initSettings() {
+  const gearBtn = document.getElementById("settingsBtn");
+  const panel = document.getElementById("settingsPanel");
+  const compressToggle = document.getElementById("settingCompress");
+  const autoLogosToggle = document.getElementById("settingAutoLogos");
+  const minSizeSelect = document.getElementById("settingMinSize");
+  const quickScanToggle = document.getElementById("settingQuickScan");
+
+  // Load persisted settings
+  chrome.storage.local.get("nasSettings", (result) => {
+    if (result.nasSettings) {
+      settings = { ...SETTINGS_DEFAULTS, ...result.nasSettings };
+    }
+    // Apply to UI
+    compressToggle.checked = settings.compressImages;
+    autoLogosToggle.checked = settings.autoSelectLogos;
+    minSizeSelect.value = String(settings.minImageSize);
+    quickScanToggle.checked = settings.quickScan;
+  });
+
+  // Gear button toggles panel visibility
+  gearBtn.addEventListener("click", () => {
+    const isOpen = panel.style.display !== "none";
+    panel.style.display = isOpen ? "none" : "block";
+    gearBtn.classList.toggle("active", !isOpen);
+  });
+
+  // Persist on change
+  compressToggle.addEventListener("change", () => {
+    settings.compressImages = compressToggle.checked;
+    chrome.storage.local.set({ nasSettings: settings });
+  });
+
+  autoLogosToggle.addEventListener("change", () => {
+    settings.autoSelectLogos = autoLogosToggle.checked;
+    chrome.storage.local.set({ nasSettings: settings });
+  });
+
+  minSizeSelect.addEventListener("change", () => {
+    settings.minImageSize = parseInt(minSizeSelect.value, 10);
+    chrome.storage.local.set({ nasSettings: settings });
+    // Re-render grid immediately so they see the effect
+    renderGrid();
+    renderBadges();
+  });
+
+  quickScanToggle.addEventListener("change", () => {
+    settings.quickScan = quickScanToggle.checked;
+    chrome.storage.local.set({ nasSettings: settings });
+  });
+
+  // ── Open Brand Guideline button ──
+  const guidelineBtn = document.getElementById("openGuidelineBtn");
+  if (guidelineBtn) {
+    guidelineBtn.addEventListener("click", async () => {
+      if (!domData) {
+        showToast("No brand data yet — scan a page first");
+        return;
+      }
+
+      guidelineBtn.disabled = true;
+      guidelineBtn.textContent = "Generating…";
+
+      try {
+        const response = await chrome.runtime.sendMessage({
+          action: "generateGuideline",
+          domData: {
+            colors: domData.colors,
+            fontInfo: domData.fontInfo,
+            pageMeta: domData.pageMeta,
+            copy: domData.copy,
+            ctas: domData.ctas,
+            typographyScale: domData.typographyScale,
+            socialLinks: domData.socialLinks,
+            structuredData: domData.structuredData,
+            favicons: domData.favicons,
+            colorSemantics: domData.colorSemantics,
+          },
+        });
+
+        if (response.error) throw new Error(response.error);
+
+        // Store kit data in session storage, then open the viewer extension page.
+        // The viewer page is a real chrome-extension:// page — its own <script src> is
+        // treated as 'self' by CSP, so full JS interactivity works (no inline scripts).
+        try {
+          await chrome.storage.session.set({ guidelineKit: response.kit });
+        } catch {
+          // Fallback for older Chrome without session storage
+          await chrome.storage.local.set({ guidelineKit: response.kit });
+        }
+        chrome.tabs.create({ url: chrome.runtime.getURL("guideline-viewer.html") });
+      } catch (err) {
+        console.error("Failed to generate guideline:", err);
+        showToast("Failed to generate guideline");
+      } finally {
+        guidelineBtn.disabled = false;
+        guidelineBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg> Open Brand Guideline`;
+      }
+    });
   }
 }

@@ -413,16 +413,31 @@ function detectUIElement(el) {
 function extractFontInfo() {
   const fonts = new Map();
 
-  // 1. Google Fonts links
-  document.querySelectorAll('link[href*="fonts.googleapis.com"], link[href*="fonts.gstatic.com"]').forEach((link) => {
+  // 1. Google Fonts links (CSS v1: family=Open+Sans|Roboto:400,700  CSS v2: family=Inter:wght@400;700)
+  document.querySelectorAll('link[href*="fonts.googleapis.com"]').forEach((link) => {
     try {
       const url = new URL(link.href);
-      const family = url.searchParams.get("family");
-      if (family) {
-        family.split("|").forEach((f) => {
-          const name = f.split(":")[0].replace(/\+/g, " ");
-          fonts.set(name, { name, source: "google-fonts", url: link.href });
-        });
+      const familyParam = url.searchParams.get("family");
+      if (!familyParam) return;
+      // CSS v1: "Open+Sans:400,700|Roboto" — pipe-separated, colon-separated weights
+      // CSS v2: "Inter:wght@400;700&family=Roboto:wght@300" — multiple family params
+      familyParam.split("|").forEach((f) => {
+        const name = f.split(":")[0].replace(/\+/g, " ");
+        if (name && !fonts.has(name)) {
+          fonts.set(name, { name, source: "google-fonts", cssUrl: link.href, url: null });
+        }
+      });
+    } catch { /* skip */ }
+  });
+  // Also handle multiple family= params in CSS v2 URLs
+  document.querySelectorAll('link[href*="fonts.googleapis.com/css2"]').forEach((link) => {
+    try {
+      const allFamilies = new URL(link.href).searchParams.getAll("family");
+      for (const fam of allFamilies) {
+        const name = fam.split(":")[0].replace(/\+/g, " ");
+        if (name && !fonts.has(name)) {
+          fonts.set(name, { name, source: "google-fonts", cssUrl: link.href, url: null });
+        }
       }
     } catch { /* skip */ }
   });
@@ -440,13 +455,29 @@ function extractFontInfo() {
           if (rule instanceof CSSFontFaceRule) {
             const family = rule.style.getPropertyValue("font-family").replace(/['"]/g, "").trim();
             const src = rule.style.getPropertyValue("src");
-            if (family && !fonts.has(family)) {
-              // Extract URL from src
-              const urlMatch = src.match(/url\(["']?(.+?)["']?\)/);
-              fonts.set(family, {
+            const weight = rule.style.getPropertyValue("font-weight") || "400";
+            const style = rule.style.getPropertyValue("font-style") || "normal";
+            if (!family) continue;
+
+            // Extract ALL url() values from src (multiple format fallbacks)
+            const urlMatches = [...src.matchAll(/url\(["']?(.+?)["']?\)/g)].map((m) => m[1]);
+            // Prefer woff2 > woff > ttf > otf
+            const ranked = urlMatches.sort((a, b) => {
+              const rank = (u) => u.includes("woff2") ? 0 : u.includes("woff") ? 1 : u.includes("ttf") ? 2 : u.includes("otf") ? 3 : 4;
+              return rank(a) - rank(b);
+            });
+            const bestUrl = ranked[0] || null;
+
+            // Key by family+weight+style to capture all variants
+            const key = `${family}::${weight}::${style}`;
+            if (!fonts.has(key)) {
+              fonts.set(key, {
                 name: family,
                 source: "font-face",
-                url: urlMatch ? urlMatch[1] : null,
+                url: bestUrl ? new URL(bestUrl, document.baseURI).href : null,
+                weight,
+                style,
+                allUrls: ranked.map((u) => { try { return new URL(u, document.baseURI).href; } catch { return u; } }),
               });
             }
           }
@@ -502,6 +533,262 @@ function getFaviconUrl() {
   return window.location.origin + "/favicon.ico";
 }
 
+// ─── Copy & CTA Extraction ───────────────────────────────────────────
+
+const CTA_KEYWORDS = /^(shop|buy|order|get|start|sign|subscribe|try|book|contact|learn|discover|explore|download|join|register|apply|request|schedule|watch|view|see|read|find|check|claim|grab|unlock|access|create|build|upgrade|switch)\b/i;
+
+function extractCopyAndCTAs() {
+  const copy = { headlines: [], tagline: null, description: null };
+  const ctas = [];
+  const seen = new Set();
+
+  // ── Headlines: h1, h2 (above the fold preferred) ──
+  document.querySelectorAll("h1, h2").forEach((el) => {
+    const text = el.textContent?.trim();
+    if (!text || text.length < 4 || text.length > 200) return;
+    if (seen.has(text.toLowerCase())) return;
+    seen.add(text.toLowerCase());
+    copy.headlines.push(text);
+  });
+  // Cap at 5 most prominent
+  copy.headlines = copy.headlines.slice(0, 5);
+
+  // ── Tagline: og:description or meta description ──
+  const ogDesc = document.querySelector('meta[property="og:description"]')?.getAttribute("content")?.trim();
+  const metaDesc = document.querySelector('meta[name="description"]')?.getAttribute("content")?.trim();
+  copy.tagline = ogDesc || metaDesc || null;
+
+  // ── Description: first substantial <p> in main content area ──
+  const mainContent = document.querySelector("main, article, [role='main'], .content, #content") || document.body;
+  const paragraphs = mainContent.querySelectorAll("p");
+  for (const p of paragraphs) {
+    const text = p.textContent?.trim();
+    if (text && text.length >= 40 && text.length <= 500) {
+      copy.description = text;
+      break;
+    }
+  }
+
+  // ── CTA buttons: <a> and <button> with short, action-oriented text ──
+  const ctaSeen = new Set();
+  const candidates = document.querySelectorAll('a, button, [role="button"], input[type="submit"]');
+
+  for (const el of candidates) {
+    const text = (el.textContent || el.value || "").trim().replace(/\s+/g, " ");
+    if (!text || text.length < 2 || text.length > 40) continue;
+    if (!CTA_KEYWORDS.test(text)) continue;
+
+    const key = text.toLowerCase();
+    if (ctaSeen.has(key)) continue;
+    ctaSeen.add(key);
+
+    const style = getComputedStyle(el);
+    const bgColor = style.backgroundColor;
+    const color = style.color;
+
+    // Skip invisible or transparent buttons
+    if (style.display === "none" || style.visibility === "hidden") continue;
+    if (bgColor === "rgba(0, 0, 0, 0)" && style.borderColor === "rgba(0, 0, 0, 0)") continue;
+
+    ctas.push({
+      text,
+      backgroundColor: bgColor,
+      color,
+      fontFamily: style.fontFamily?.split(",")[0]?.trim().replace(/['"]/g, "") || "",
+      fontWeight: style.fontWeight,
+      fontSize: style.fontSize,
+      borderRadius: style.borderRadius,
+      padding: style.padding,
+    });
+
+    if (ctas.length >= 6) break; // cap at 6 unique CTAs
+  }
+
+  return { copy, ctas };
+}
+
+// ─── Typography Scale Extraction ─────────────────────────────────────
+
+function extractTypographyScale() {
+  const scale = [];
+  const elements = [
+    { selector: "h1", label: "h1" },
+    { selector: "h2", label: "h2" },
+    { selector: "h3", label: "h3" },
+    { selector: "body", label: "body" },
+    { selector: "a", label: "a" },
+    { selector: "button, [role='button']", label: "button" },
+    { selector: "small, .caption, figcaption", label: "small" },
+  ];
+
+  for (const { selector, label } of elements) {
+    const el = document.querySelector(selector);
+    if (!el) continue;
+
+    const s = getComputedStyle(el);
+    const family = s.fontFamily?.split(",")[0]?.trim().replace(/['"]/g, "") || "";
+
+    // Skip if this is just inheriting body defaults for heading tags with no actual content
+    if (label.startsWith("h") && !el.textContent?.trim()) continue;
+
+    scale.push({
+      element: label,
+      fontFamily: family,
+      fontSize: s.fontSize,
+      fontWeight: s.fontWeight,
+      lineHeight: s.lineHeight,
+      letterSpacing: s.letterSpacing === "normal" ? "0" : s.letterSpacing,
+      color: rgbToHex(s.color) || s.color,
+      textTransform: s.textTransform !== "none" ? s.textTransform : null,
+    });
+  }
+
+  return scale;
+}
+
+// ─── Social Links Extraction ─────────────────────────────────────────
+
+function extractSocialLinks() {
+  const SOCIAL_PATTERNS = {
+    twitter:   /(?:twitter\.com|x\.com)\/(?!share|intent|search|hashtag)([^\s/?#]+)/i,
+    instagram: /instagram\.com\/(?!p\/|explore|accounts|reel)([^\s/?#]+)/i,
+    linkedin:  /linkedin\.com\/(?:company|in)\/([^\s/?#]+)/i,
+    facebook:  /facebook\.com\/(?!sharer|share|dialog)([^\s/?#]+)/i,
+    youtube:   /youtube\.com\/(?:@|channel\/|c\/|user\/)([^\s/?#]+)/i,
+    tiktok:    /tiktok\.com\/@?([^\s/?#]+)/i,
+  };
+
+  const links = {};
+
+  // Prioritize footer and header links — they're the canonical social links
+  const containers = document.querySelectorAll("footer, header, nav, [class*='social'], [class*='footer'], [id*='footer']");
+  const anchors = new Set();
+
+  containers.forEach((c) => c.querySelectorAll("a[href]").forEach((a) => anchors.add(a)));
+  // Fallback: scan all links if we found very few
+  if (anchors.size < 3) {
+    document.querySelectorAll("a[href]").forEach((a) => anchors.add(a));
+  }
+
+  for (const a of anchors) {
+    const href = a.href;
+    if (!href) continue;
+    for (const [platform, regex] of Object.entries(SOCIAL_PATTERNS)) {
+      if (links[platform]) continue; // already found
+      if (regex.test(href)) {
+        links[platform] = href;
+      }
+    }
+  }
+
+  return links;
+}
+
+// ─── JSON-LD / Schema.org Structured Data ────────────────────────────
+
+function extractStructuredData() {
+  const results = [];
+
+  document.querySelectorAll('script[type="application/ld+json"]').forEach((script) => {
+    try {
+      const data = JSON.parse(script.textContent);
+      // Handle both single objects and arrays
+      const items = Array.isArray(data) ? data : [data];
+
+      for (const item of items) {
+        const type = item["@type"];
+        if (!type) continue;
+
+        // Extract Organization / Brand data
+        if (/^(Organization|Corporation|LocalBusiness|Brand|WebSite)$/i.test(type)) {
+          const entry = { type };
+          if (item.name) entry.name = item.name;
+          if (item.url) entry.url = item.url;
+          if (item.logo) {
+            entry.logo = typeof item.logo === "string" ? item.logo : item.logo?.url || null;
+          }
+          if (item.sameAs) entry.sameAs = Array.isArray(item.sameAs) ? item.sameAs : [item.sameAs];
+          if (item.description) entry.description = item.description;
+          if (item.contactPoint) entry.contactPoint = item.contactPoint;
+          results.push(entry);
+        }
+      }
+    } catch { /* malformed JSON-LD, skip */ }
+  });
+
+  return results.length > 0 ? results : null;
+}
+
+// ─── Favicon Variants ────────────────────────────────────────────────
+
+function extractFaviconVariants() {
+  const favicons = [];
+  const seen = new Set();
+
+  const selectors = [
+    'link[rel="icon"]',
+    'link[rel="shortcut icon"]',
+    'link[rel="apple-touch-icon"]',
+    'link[rel="apple-touch-icon-precomposed"]',
+    'link[rel="mask-icon"]',
+  ];
+
+  for (const sel of selectors) {
+    document.querySelectorAll(sel).forEach((link) => {
+      const url = link.href;
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      favicons.push({
+        url,
+        sizes: link.getAttribute("sizes") || null,
+        type: link.getAttribute("rel") || "icon",
+      });
+    });
+  }
+
+  // Always include /favicon.ico as fallback if nothing else
+  if (favicons.length === 0) {
+    favicons.push({
+      url: window.location.origin + "/favicon.ico",
+      sizes: null,
+      type: "icon",
+    });
+  }
+
+  return favicons;
+}
+
+// ─── Color Semantics ─────────────────────────────────────────────────
+// Takes the existing flat color list and adds semantic roles
+
+function categorizeColors(allColors) {
+  const bodyStyle = getComputedStyle(document.body);
+  const bgHex = rgbToHex(bodyStyle.backgroundColor) || "#ffffff";
+  const textHex = rgbToHex(bodyStyle.color) || "#000000";
+
+  // Primary = most prominent non-bg, non-text color (first in the weighted list)
+  // Secondary = second most prominent
+  let primary = null;
+  let secondary = null;
+
+  for (const c of allColors) {
+    const hex = c.hex;
+    // Skip if it's too close to bg or text
+    if (colorDistance(hex, bgHex) < 40) continue;
+    if (colorDistance(hex, textHex) < 40) continue;
+
+    if (!primary) { primary = hex; continue; }
+    if (!secondary) { secondary = hex; break; }
+  }
+
+  return {
+    primary: primary || (allColors[0]?.hex ?? null),
+    secondary: secondary || (allColors[1]?.hex ?? null),
+    background: bgHex,
+    text: textHex,
+  };
+}
+
 // ─── Deep Scan — auto-scroll to trigger lazy loaders ─────────────────
 
 async function deepScan() {
@@ -532,11 +819,18 @@ async function deepScan() {
   await new Promise((r) => setTimeout(r, 300));
 
   // Now run the full DOM analysis with everything loaded
+  const colors = extractAllColors();
   return {
-    colors: extractAllColors(),
+    colors,
     imageContext: extractImageContext(),
     fontInfo: extractFontInfo(),
     pageMeta: extractPageMeta(),
+    ...extractCopyAndCTAs(),
+    typographyScale: extractTypographyScale(),
+    socialLinks: extractSocialLinks(),
+    structuredData: extractStructuredData(),
+    favicons: extractFaviconVariants(),
+    colorSemantics: categorizeColors(colors),
   };
 }
 
@@ -549,12 +843,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const imageContext = extractImageContext();
       const fontInfo = extractFontInfo();
       const pageMeta = extractPageMeta();
+      const { copy, ctas } = extractCopyAndCTAs();
 
       sendResponse({
         colors,
         imageContext,
         fontInfo,
         pageMeta,
+        copy,
+        ctas,
+        typographyScale: extractTypographyScale(),
+        socialLinks: extractSocialLinks(),
+        structuredData: extractStructuredData(),
+        favicons: extractFaviconVariants(),
+        colorSemantics: categorizeColors(colors),
       });
     } catch (err) {
       console.error("NAS content script error:", err);
