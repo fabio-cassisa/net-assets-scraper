@@ -11,6 +11,7 @@ let selectedUrls = new Set();
 let currentTab = "all";   // Active filter tab
 let hideSmall = true;     // Filter toggle state
 let hideUI = true;        // Filter UI elements (nav icons, social icons, etc.)
+let cdnVerifying = false; // True while CDN originals are being verified via HEAD requests
 
 // ─── Settings (persisted via chrome.storage.local) ───────────────────
 const SETTINGS_DEFAULTS = { compressImages: false, autoSelectLogos: true, minImageSize: 48, quickScan: false };
@@ -891,22 +892,26 @@ function renderGrid() {
 }
 
 function getFilteredAssets() {
-  let filtered = allAssets;
+  let filtered = filterByVisibility(allAssets);
 
   // Tab filter
   if (currentTab !== "all" && currentTab !== "colors") {
     filtered = filtered.filter((a) => a.type === currentTab);
   }
 
+  return filtered;
+}
+
+/** Shared visibility filter — applies hide-small + hide-UI but NOT tab filter.
+ *  Used by both getFilteredAssets() and renderBadges() to keep logic in sync. */
+function filterByVisibility(assets) {
+  let filtered = assets;
+
   // Hide small toggle — check contentLength AND DOM dimensions AND URL hints
   if (hideSmall) {
     filtered = filtered.filter((a) => {
-      // CDN assets with verified originals bypass size checks — the thumbnail is tiny
-      // but we'll download the full-size original
       if (a.cdnOriginalVerified) return true;
-      // Known small file size
       if (a.contentLength > 0 && a.contentLength < SIZE_THRESHOLD) return false;
-      // Known tiny dimensions from DOM
       const w = a.domWidth || 0;
       const h = a.domHeight || 0;
       if (w > 0 && h > 0 && w <= settings.minImageSize && h <= settings.minImageSize) return false;
@@ -917,13 +922,9 @@ function getFilteredAssets() {
   // Hide UI elements — check isUI flag AND URL-based heuristics
   if (hideUI) {
     filtered = filtered.filter((a) => {
-      // CDN assets with verified originals are real content, not UI junk
       if (a.cdnOriginalVerified) return true;
-      // Content script flagged it as UI
       if (a.isUI) return false;
-      // URL-based UI detection (fallback for network-only assets)
       if (a.url && (UI_URL_PATTERNS.test(a.url) || UI_CDN_PATTERNS.test(a.url))) return false;
-      // Very small known dimensions are almost always UI
       const w = a.domWidth || 0;
       const h = a.domHeight || 0;
       if (w > 0 && h > 0 && w <= 24 && h <= 24) return false;
@@ -1255,7 +1256,14 @@ function toggleSelection(url) {
 function updateDownloadBar() {
   const count = selectedUrls.size;
   document.getElementById("selectedCount").textContent = `${count} selected`;
-  document.getElementById("downloadBtn").disabled = count === 0;
+  // Disable download while CDN verification is in progress OR nothing selected
+  const btn = document.getElementById("downloadBtn");
+  btn.disabled = count === 0 || cdnVerifying;
+  if (cdnVerifying && count > 0) {
+    btn.title = "Verifying CDN originals…";
+  } else {
+    btn.title = "";
+  }
 
   // Estimate size — use CDN original size when available (that's what gets downloaded)
   let totalSize = 0;
@@ -1274,27 +1282,9 @@ function updateDownloadBar() {
 // ─── Render Badges ───────────────────────────────────────────────────
 function renderBadges() {
   const counts = { image: 0, video: 0, font: 0 };
-  // Count ALL assets (with hide-small/hide-UI filters but NOT tab filter)
+  // Count ALL visible assets (with hide-small/hide-UI filters but NOT tab filter)
   // so badges always reflect totals regardless of which tab is active
-  for (const asset of allAssets) {
-    // Apply same hide-small / hide-UI logic as getFilteredAssets
-    if (hideSmall) {
-      if (!asset.cdnOriginalVerified) {
-        if (asset.contentLength > 0 && asset.contentLength < SIZE_THRESHOLD) continue;
-        const w = asset.domWidth || 0;
-        const h = asset.domHeight || 0;
-        if (w > 0 && h > 0 && w <= settings.minImageSize && h <= settings.minImageSize) continue;
-      }
-    }
-    if (hideUI) {
-      if (!asset.cdnOriginalVerified) {
-        if (asset.isUI) continue;
-        if (asset.url && (UI_URL_PATTERNS.test(asset.url) || UI_CDN_PATTERNS.test(asset.url))) continue;
-        const w = asset.domWidth || 0;
-        const h = asset.domHeight || 0;
-        if (w > 0 && h > 0 && w <= 24 && h <= 24) continue;
-      }
-    }
+  for (const asset of filterByVisibility(allAssets)) {
     if (counts[asset.type] !== undefined) counts[asset.type]++;
   }
 
@@ -1630,6 +1620,9 @@ async function verifyCdnOriginals() {
     return;
   }
 
+  cdnVerifying = true;
+  updateDownloadBar(); // Reflect locked state immediately
+
   const uniqueUrls = [...new Set(candidates.map((a) => a.cdnOriginalUrl))];
   console.log(`[NAS] CDN resolution: verifying ${uniqueUrls.length} original URLs…`);
 
@@ -1663,13 +1656,15 @@ async function verifyCdnOriginals() {
       console.log(`[NAS] CDN resolution: re-rendering — ${visibleAfter} assets visible after filters`);
       renderGrid();
       renderBadges();
-      updateDownloadBar();
     }
     // Show final scan toast with accurate post-verification counts
     showScanCompleteToast();
   } catch (err) {
     console.warn("[NAS] CDN resolution failed:", err);
     showScanCompleteToast(); // Still show toast even if CDN verification fails
+  } finally {
+    cdnVerifying = false;
+    updateDownloadBar(); // Unlock download button
   }
 }
 
@@ -1818,8 +1813,9 @@ async function downloadKit() {
   }
 }
 
-/** Legacy panel-based download — used for Instagram transcode (needs WebCodecs). */
-async function downloadKitInPanel() {
+/** Legacy panel-based download — used for Instagram transcode (needs WebCodecs).
+ *  @param {Array} [selectedAssets] — pre-filtered asset list. Falls back to selectedUrls query if omitted. */
+async function downloadKitInPanel(selectedAssets) {
   const btn = document.getElementById("downloadBtn");
   const progressEl = document.getElementById("downloadProgress");
   const progressFill = document.getElementById("progressFill");
@@ -1831,7 +1827,7 @@ async function downloadKitInPanel() {
 
   try {
     const zip = new JSZip();
-    const selected = allAssets.filter((a) => selectedUrls.has(a.url));
+    const selected = selectedAssets || allAssets.filter((a) => selectedUrls.has(a.url));
     const total = selected.length;
 
     // Create folder structure
