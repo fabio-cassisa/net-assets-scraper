@@ -106,6 +106,7 @@ try {
 
 function handleRequest(details) {
   if (details.tabId < 0) return;
+  if (details.statusCode < 200 || details.statusCode >= 400) return; // Skip failed requests (404, 5xx, etc.)
 
   const url = details.url;
 

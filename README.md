@@ -19,7 +19,8 @@ non-technical people use this — sales, account managers. it needs to be dead s
 - **smart brand colors** — extracts colors from CSS custom properties first (most reliable), then meta tags (`theme-color`), then weighted DOM frequency analysis with noise filtering. skips near-black/white/grey.
 - **logo detection** — flags images as logos based on alt text, class names, IDs, file paths, and DOM position (header/nav zones).
 - **UI element filtering** — identifies and hides nav icons, social icons, button arrows, favicons, and other UI chrome. uses size heuristics (≤48px), DOM context (inside `<button>`, `<nav>`), class/id pattern matching, and known icon CDN domains.
-- **deep scan** — auto-scrolls the entire page to trigger lazy-loaded images (IntersectionObserver, `data-src`, `data-lazy-src`, etc.), then runs full DOM analysis.
+- **deep scan** — auto-scrolls the entire page to trigger lazy-loaded images (IntersectionObserver, `data-src`, `data-lazy-src`, etc.), then runs full DOM analysis. also extracts CSS `background-image` assets and inline SVG logos that don't appear in the network layer.
+- **CDN intelligence** — recognizes transform patterns from 6 major image CDNs (Storyblok, Thumbor, Imgix, Cloudinary, Contentful, Shopify). when the same image appears at multiple sizes or formats, NAS deduplicates and picks the highest-quality version. eliminates the "6 copies of the same hero image" problem.
 - **font detection** — finds Google Fonts links, Adobe Fonts/TypeKit, `@font-face` declarations, and computed font families from key elements.
 - **preview grid** — visual grid with real thumbnails, video frame grabs, and live font glyph rendering. type badges, logo badges, file sizes, dimensions.
 - **organized download** — selected assets go into a zip: `logos/`, `images/`, `videos/`, `fonts/` + a `brand.json` with all extracted colors, fonts, and page metadata + a self-contained `brand-guideline.html` you can open in any browser.
@@ -173,10 +174,11 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 - **facebook/twitter CDN expiry** — image URLs are time-signed and expire. download your kit promptly after scanning.
 - **deep scan on long feeds** — scrolling through large feeds (twitter timelines, facebook pages) takes time. a quick scan grabs what's visible; deep scan scrolls for more.
 - **youtube** — no video download by design. youtube's cipher/signature system changes frequently — supporting it would require constant maintenance. images and brand assets work fine.
+- **HEVC/H.265 videos on windows** — some websites serve video encoded as H.265/HEVC. macOS plays these natively. windows does not include an HEVC codec by default (Microsoft charges for it via the Microsoft Store). if downloaded videos won't play on windows, install the [HEVC Video Extensions](https://apps.microsoft.com/detail/9nmzlz57r3t7) from the Microsoft Store, or use VLC (free, plays everything). this is a platform limitation, not a bug.
 
 ## status
 
-🟢 **v2.7 — stable release. brand intelligence + settings panel + image compression.**
+🟢 **v2.8 — stable release. scanning intelligence + CDN deduplication + brand intelligence.**
 
 - [x] passive network capture via `webRequest`
 - [x] smart brand color extraction (CSS vars → meta → DOM frequency)
@@ -211,12 +213,18 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 - [x] **font file downloads** — proactive Google Fonts CSS → `.woff2` resolution, `@font-face` direct URL fetching, deduplication against webRequest-captured fonts
 - [x] **export tokens** — on-demand from guideline page: CSS custom properties, W3C Design Tokens JSON (Figma/Style Dictionary), markdown brand brief (AI agents). print/PDF support.
 - [x] **quick summary** — plain-text brand summary banner in the guideline page: brand name, colors, fonts, CTA style. one-click copy for sales/non-technical handoff.
+- [x] **CDN normalization** — recognizes Storyblok, Thumbor, Imgix, Cloudinary, Contentful, and Shopify CDN transform patterns. deduplicates variants of the same image at different sizes/formats and picks the highest quality version.
+- [x] **CSS background-image extraction** — discovers hero banners and section backgrounds set via CSS stylesheets (not just inline styles).
+- [x] **inline SVG extraction** — serializes logo-like SVG elements embedded directly in HTML into downloadable assets.
+- [x] **404 response filtering** — skips failed network requests, eliminating phantom assets from CDN format negotiations.
 
-**next — backlog (v2.8 candidates):**
+**next — backlog (v2.9 candidates):**
 
+- [ ] CDN original resolution — when a CDN thumbnail is detected (e.g. Storyblok `/m/120x168/`), construct and verify the full-size original URL via HEAD request. offer the original for download instead of the tiny transform.
 - [ ] size awareness (zip estimate, adnami suite limits warning)
 - [ ] base64 memory optimization (streaming fetch instead of data URLs)
 - [ ] smart color deduplication (merge near-identical hex values)
+- [ ] shadow DOM traversal (web component content extraction)
 
 **planned — drop 3:**
 
@@ -236,7 +244,8 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 
 all releases available at [github.com/fabio-cassisa/ChromeAssetsScraper/releases](https://github.com/fabio-cassisa/ChromeAssetsScraper/releases)
 
-- `v2.7` — **current stable.** brand guideline generator, settings panel, enhanced brand extraction, font file downloads (Google Fonts CSS resolution), export tokens (CSS/Design Tokens JSON/markdown brief), quick summary for sales, print/PDF support.
+- `v2.8` — **current stable.** scanning intelligence — CDN normalization (Storyblok/Thumbor/Imgix/Cloudinary/Contentful/Shopify), CSS background-image extraction, inline SVG extraction, 404 response filtering, asset pipeline debug logging.
+- `v2.7` — brand guideline generator, settings panel, enhanced brand extraction, font file downloads (Google Fonts CSS resolution), export tokens (CSS/Design Tokens JSON/markdown brief), quick summary for sales, print/PDF support.
 - `v2.6` — background-survivable scanning + downloads, scan cache with URL validation, SPA stale-data fix.
 - `v2.5` — background download pipeline, feed warnings, UI locks, grid batching.
 - `v2.4` — deep scan progress bar, facebook `progressive_urls` API capture, post-scroll collection window.

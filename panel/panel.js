@@ -41,6 +41,192 @@ const UI_CDN_PATTERNS = /fontawesome|icomoon|material.*icon|googleapis.*icon|use
 // Patterns that indicate DASH/HLS streaming fragments (not playable standalone)
 const VIDEO_FRAGMENT_PATTERNS = /\.m4s(?:\?|$)|\.ts(?:\?|$)|\/segment|\/chunk\/|\/range\/|sq=\d|bytestart=|byteend=|\/frag\(|\.dash|init\.mp4/i;
 
+// ─── CDN Normalization ───────────────────────────────────────────────
+// Recognizes CDN transform patterns and extracts a "base key" for deduplication.
+// Returns { baseUrl, cdnType, quality } or null if not a recognized CDN transform.
+
+// Storyblok: a.storyblok.com/f/SPACE/ORIGWxH/HASH/FILE.ext/m/WxH/filters:format(X):quality(Y)
+// Transforms are appended AFTER the filename via /m/ — must fire before generic Thumbor
+const STORYBLOK_HOST = /\.storyblok\.com$/;
+const STORYBLOK_TRANSFORM = /\/m\/(\d+)x(\d+)(?:\/filters:[^?#]*)?$/;
+
+// Thumbor: /unsafe/WIDTHxHEIGHT/filters:.../PATH  or  /unsafe/smart/PATH
+// Variants: some skip /unsafe/, some use /fit-in/, some chain multiple transforms
+const THUMBOR_PATTERN = /^(https?:\/\/[^/]+)\/(?:unsafe\/)?(?:fit-in\/)?(?:\d+x\d+\/)?(?:(?:smart|center|top|bottom|left|right)\/)*(?:filters:[^/]+\/)*(.+)$/;
+
+// Imgix: ?w=WIDTH&h=HEIGHT&fit=CROP&fm=FORMAT&q=QUALITY&...
+const IMGIX_PARAMS = /[?&](w|h|fit|crop|fm|auto|q|dpr|blur|sharp|cs|ch|mark|txt|exp|faceindex|facepad|orient|flip|usm|usmrad|sat|bri|con|hue|gam|vib)=/;
+
+// Cloudinary: /image/upload/c_fill,w_WIDTH,h_HEIGHT,f_FORMAT,q_QUALITY,.../PATH
+const CLOUDINARY_PATTERN = /^(https?:\/\/[^/]+\/(?:image|video)\/upload)\/(?:[a-z]_[^/]+(?:,|\/))*(v\d+\/)?(.+)$/;
+
+// Contentful: images.ctfassets.net/SPACE/ID/HASH/NAME?w=WIDTH&h=HEIGHT&fm=FORMAT&q=QUALITY
+const CONTENTFUL_PARAMS = /[?&](w|h|fm|q|fit|f|r)=/;
+const CONTENTFUL_HOST = /images\.ctfassets\.net/;
+
+// Shopify: cdn.shopify.com/.../file.jpg?v=TIMESTAMP&width=WIDTH
+// Also: _WIDTHx. or _WIDTHx_crop_center. in filename
+const SHOPIFY_HOST = /cdn\.shopify\.com/;
+const SHOPIFY_SIZE_SUFFIX = /_\d+x(?:\d+)?(?:_crop_center)?(?=\.)/;
+
+/**
+ * Normalize a CDN URL to a base key for deduplication.
+ * Returns { baseUrl, cdnType, quality } or null.
+ * quality = estimated quality score (higher = better) for picking the best variant.
+ */
+function normalizeCdnUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const fullUrl = parsed.href;
+
+    // ── Storyblok ── (must fire before generic Thumbor)
+    if (STORYBLOK_HOST.test(parsed.hostname)) {
+      const transformMatch = fullUrl.match(STORYBLOK_TRANSFORM);
+      if (transformMatch) {
+        const baseUrl = fullUrl.slice(0, transformMatch.index);
+        const w = parseInt(transformMatch[1]);
+        const h = parseInt(transformMatch[2]);
+        return { baseUrl, cdnType: "storyblok", quality: w * h };
+      }
+      // Storyblok URL without transforms — not a CDN variant
+      return null;
+    }
+
+    // ── Thumbor ──
+    const thumborMatch = fullUrl.match(THUMBOR_PATTERN);
+    if (thumborMatch) {
+      const origin = thumborMatch[1];
+      const path = thumborMatch[2];
+      // Extract dimensions from URL for quality scoring
+      const dimMatch = fullUrl.match(/\/(\d+)x(\d+)\//);
+      const quality = dimMatch ? parseInt(dimMatch[1]) * parseInt(dimMatch[2]) : 0;
+      return { baseUrl: `${origin}/${path}`, cdnType: "thumbor", quality };
+    }
+
+    // ── Cloudinary ──
+    const cloudMatch = fullUrl.match(CLOUDINARY_PATTERN);
+    if (cloudMatch) {
+      const base = cloudMatch[1];
+      const version = cloudMatch[2] || "";
+      const path = cloudMatch[3];
+      // Extract dimensions from transform params
+      const wMatch = fullUrl.match(/w_(\d+)/);
+      const hMatch = fullUrl.match(/h_(\d+)/);
+      const quality = (wMatch ? parseInt(wMatch[1]) : 0) * (hMatch ? parseInt(hMatch[1]) : 1);
+      return { baseUrl: `${base}/${version}${path}`, cdnType: "cloudinary", quality };
+    }
+
+    // ── Shopify ──
+    if (SHOPIFY_HOST.test(parsed.hostname)) {
+      // Strip size suffix from filename: product_800x.jpg → product.jpg
+      let cleanPath = parsed.pathname.replace(SHOPIFY_SIZE_SUFFIX, "");
+      // Strip sizing query params
+      const cleanParams = new URLSearchParams(parsed.search);
+      const width = parseInt(cleanParams.get("width")) || 0;
+      const height = parseInt(cleanParams.get("height")) || 0;
+      cleanParams.delete("width");
+      cleanParams.delete("height");
+      cleanParams.delete("crop");
+      cleanParams.delete("format");
+      const qs = cleanParams.toString();
+      const baseUrl = `${parsed.origin}${cleanPath}${qs ? "?" + qs : ""}`;
+      return { baseUrl, cdnType: "shopify", quality: width * (height || 1) };
+    }
+
+    // ── Contentful ──
+    if (CONTENTFUL_HOST.test(parsed.hostname) && CONTENTFUL_PARAMS.test(parsed.search)) {
+      const width = parseInt(parsed.searchParams.get("w")) || 0;
+      const height = parseInt(parsed.searchParams.get("h")) || 0;
+      const baseUrl = `${parsed.origin}${parsed.pathname}`;
+      return { baseUrl, cdnType: "contentful", quality: width * (height || 1) };
+    }
+
+    // ── Imgix ──
+    if (IMGIX_PARAMS.test(parsed.search)) {
+      // Imgix-style URLs: strip all known transform params, keep the rest
+      const width = parseInt(parsed.searchParams.get("w")) || 0;
+      const height = parseInt(parsed.searchParams.get("h")) || 0;
+      const imgixKeys = ["w", "h", "fit", "crop", "fm", "auto", "q", "dpr", "blur", "sharp",
+        "cs", "ch", "mark", "txt", "exp", "faceindex", "facepad", "orient", "flip",
+        "usm", "usmrad", "sat", "bri", "con", "hue", "gam", "vib"];
+      const cleanParams = new URLSearchParams(parsed.search);
+      for (const key of imgixKeys) cleanParams.delete(key);
+      const qs = cleanParams.toString();
+      const baseUrl = `${parsed.origin}${parsed.pathname}${qs ? "?" + qs : ""}`;
+      // Only treat as Imgix if we actually stripped meaningful params
+      if (baseUrl !== fullUrl) {
+        return { baseUrl, cdnType: "imgix", quality: width * (height || 1) };
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deduplicate CDN variants: group by normalized base URL, keep the best variant.
+ * Also groups srcset variants: images with the same pathname base but different
+ * size suffixes (e.g. image-400.jpg, image-800.jpg, image-1200.jpg).
+ * Returns the deduplicated array with cdnVariants/cdnType metadata on winners.
+ */
+function deduplicateAssets(assets) {
+  const cdnGroups = new Map();  // baseUrl → [{ asset, quality }]
+  const ungrouped = [];
+
+  for (const asset of assets) {
+    if (asset.type !== "image") {
+      ungrouped.push(asset);
+      continue;
+    }
+
+    const cdn = normalizeCdnUrl(asset.url);
+    if (cdn) {
+      const key = cdn.baseUrl;
+      if (!cdnGroups.has(key)) cdnGroups.set(key, []);
+      cdnGroups.get(key).push({ asset, quality: cdn.quality, cdnType: cdn.cdnType });
+    } else {
+      ungrouped.push(asset);
+    }
+  }
+
+  // For each CDN group, pick the best variant (highest quality score or largest contentLength)
+  const deduped = [...ungrouped];
+  let totalCollapsed = 0;
+
+  for (const [baseUrl, variants] of cdnGroups) {
+    if (variants.length === 1) {
+      // Single variant — keep as-is, still tag it
+      const v = variants[0];
+      v.asset.cdnType = v.cdnType;
+      deduped.push(v.asset);
+      continue;
+    }
+
+    // Sort by quality desc, then by contentLength desc as tiebreaker
+    variants.sort((a, b) => {
+      if (b.quality !== a.quality) return b.quality - a.quality;
+      const sizeA = a.asset.contentLength > 0 ? a.asset.contentLength : 0;
+      const sizeB = b.asset.contentLength > 0 ? b.asset.contentLength : 0;
+      return sizeB - sizeA;
+    });
+
+    const winner = variants[0];
+    winner.asset.cdnType = winner.cdnType;
+    winner.asset.cdnVariants = variants.length;
+    winner.asset.cdnBaseUrl = baseUrl;
+    deduped.push(winner.asset);
+    totalCollapsed += variants.length - 1;
+  }
+
+  if (totalCollapsed > 0) {
+    console.log(`[NAS] CDN dedup: collapsed ${totalCollapsed} duplicate variants across ${cdnGroups.size} unique assets`);
+  }
+
+  return deduped;
+}
+
 // ─── Platform Detection ──────────────────────────────────────────────
 const PLATFORM_PATTERNS = {
   instagram: /instagram\.com/,
@@ -398,7 +584,8 @@ function enrichAssets(networkResources, imageContext, platformResult) {
     return sizeB - sizeA;
   });
 
-  return enriched;
+  // Deduplicate CDN variants — collapse same image at different sizes/formats
+  return deduplicateAssets(enriched);
 }
 
 // ─── Display name builder ────────────────────────────────────────────
@@ -617,6 +804,15 @@ function createAssetCard(asset) {
       .replace("tiktok-", "tt:");
     platformBadge.textContent = label;
     card.appendChild(platformBadge);
+  }
+
+  // CDN dedup badge — shows when multiple CDN variants were collapsed
+  if (asset.cdnVariants && asset.cdnVariants > 1) {
+    const cdnBadge = document.createElement("span");
+    cdnBadge.className = "card-cdn-badge";
+    cdnBadge.textContent = `${asset.cdnVariants} sizes`;
+    cdnBadge.title = `Best of ${asset.cdnVariants} CDN variants (${asset.cdnType})`;
+    card.appendChild(cdnBadge);
   }
 
   // Thumbnail
@@ -1182,7 +1378,11 @@ function finishScanUI(toastMsg) {
 function applyScanResults(pData, dData, netResources) {
   platformData = pData;
   domData = dData;
+  const rawCount = (netResources || []).length;
   allAssets = enrichAssets(netResources || [], dData?.imageContext || [], pData);
+  const enrichedCount = allAssets.length;
+  const filteredCount = getFilteredAssets().length;
+  console.log(`[NAS] Asset pipeline: ${rawCount} raw → ${enrichedCount} enriched → ${filteredCount} after filters`);
 
   // Auto-select logos if enabled (before rendering so cards show as selected)
   if (settings.autoSelectLogos) {
@@ -1237,9 +1437,11 @@ function initScan() {
       scanFill.style.width = "100%";
       scanText.textContent = "Done";
       applyScanResults(msg.platformData, msg.domData, msg.networkResources);
-      const count = allAssets.length;
+      const visibleCount = getFilteredAssets().length;
+      const totalCount = allAssets.length;
+      const filterNote = visibleCount < totalCount ? ` (${totalCount - visibleCount} filtered)` : "";
       setTimeout(() => {
-        finishScanUI(`Deep scan complete — ${count} assets found`);
+        finishScanUI(`Deep scan complete — ${visibleCount} assets${filterNote}`);
       }, 600); // Brief flash of 100%
     }
 

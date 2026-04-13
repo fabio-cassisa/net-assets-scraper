@@ -289,7 +289,7 @@ function extractImageContext() {
         });
       }
       // Lazy-load attributes (common patterns across libraries)
-      for (const attr of ["data-src", "data-lazy-src", "data-original", "data-lazy", "data-srcset", "data-hi-res-src"]) {
+      for (const attr of ["data-src", "data-lazy-src", "data-original", "data-lazy", "data-srcset", "data-hi-res-src", "data-bg", "data-full-src", "data-image", "data-bg-src"]) {
         const val = el.getAttribute(attr);
         if (!val) continue;
         if (attr.includes("srcset")) {
@@ -338,6 +338,86 @@ function extractImageContext() {
       });
     }
   });
+
+  // ── CSS background-image extraction (stylesheet-set, not just inline) ──
+  // The selector above only catches elements with inline style="background-image:".
+  // Many sites set hero/banner/card backgrounds via CSS classes in stylesheets.
+  // Walk prominent layout elements and check computed backgroundImage.
+  const bgCandidates = document.querySelectorAll(
+    "section, [class*='hero'], [class*='banner'], [class*='cover'], [class*='background'], " +
+    "[class*='bg-'], [class*='jumbotron'], [class*='parallax'], [class*='splash'], " +
+    "header > div, main > div, .container > div, [role='banner'] > div, " +
+    "[data-bg], [data-background], [data-bg-src]"
+  );
+  for (const el of bgCandidates) {
+    const bg = getComputedStyle(el).backgroundImage;
+    if (!bg || bg === "none") continue;
+    // Extract all url() values (some elements stack multiple backgrounds)
+    const bgMatches = [...bg.matchAll(/url\(["']?(.+?)["']?\)/g)];
+    for (const match of bgMatches) {
+      let url = match[1];
+      if (!url || url.startsWith("data:") || seen.has(url)) continue;
+      // Resolve relative URLs
+      try { url = new URL(url, document.baseURI).href; } catch { continue; }
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const zone = getZone(el);
+      images.push({
+        url,
+        alt: el.getAttribute("aria-label") || "",
+        context: zone,
+        isLogo: false,
+        isUI: false,
+        width: el.offsetWidth || 0,
+        height: el.offsetHeight || 0,
+        sourceType: "css-bg",
+      });
+    }
+  }
+
+  // ── Inline SVG extraction (logos and significant SVGs) ──
+  // Many modern sites embed logos as inline <svg> elements instead of <img src="logo.svg">.
+  // These never hit webRequest. Serialize significant SVGs to blob URLs.
+  const svgEls = document.querySelectorAll("svg");
+  for (const svg of svgEls) {
+    // Skip tiny decorative SVGs (icons, arrows, chevrons)
+    const w = svg.width?.baseVal?.value || svg.getBoundingClientRect().width || 0;
+    const h = svg.height?.baseVal?.value || svg.getBoundingClientRect().height || 0;
+    if (w > 0 && h > 0 && w <= 32 && h <= 32) continue;
+
+    // Skip SVGs inside buttons, nav links, and other UI chrome
+    if (svg.closest("button, [role='button'], nav a, .pagination, .breadcrumb")) continue;
+
+    // Check if this looks like a logo or meaningful brand element
+    const parent = svg.closest("[class*='logo'], [id*='logo'], [class*='brand'], [aria-label*='logo'], header, [role='banner']");
+    const svgClass = (typeof svg.className === "string" ? svg.className : svg.className?.baseVal || "").toLowerCase();
+    const svgId = (svg.id || "").toLowerCase();
+    const ariaLabel = (svg.getAttribute("aria-label") || svg.closest("[aria-label]")?.getAttribute("aria-label") || "").toLowerCase();
+    const isLogo = !!(parent || /logo|brand/.test(svgClass) || /logo|brand/.test(svgId) || /logo|brand/.test(ariaLabel));
+
+    // Only extract logos OR SVGs with enough visual substance (not tiny icons)
+    if (!isLogo && (w < 60 || h < 30)) continue;
+
+    // Serialize to blob URL
+    try {
+      const svgData = new XMLSerializer().serializeToString(svg);
+      const blob = new Blob([svgData], { type: "image/svg+xml" });
+      const blobUrl = URL.createObjectURL(blob);
+      if (seen.has(blobUrl)) continue;
+      seen.add(blobUrl);
+      const zone = getZone(svg);
+      images.push({
+        url: blobUrl,
+        alt: ariaLabel || (isLogo ? "logo" : ""),
+        context: zone,
+        isLogo,
+        isUI: false,
+        width: Math.round(w),
+        height: Math.round(h),
+        sourceType: "inline-svg",
+      });
+    } catch { /* serialization failed, skip */ }
+  }
 
   return images;
 }

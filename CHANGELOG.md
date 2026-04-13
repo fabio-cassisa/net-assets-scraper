@@ -4,6 +4,29 @@ all notable changes to net assets scraper.
 
 ---
 
+## v2.8.0
+
+scanning intelligence release — the extension now understands CDN patterns, extracts assets the network layer misses, and deduplicates intelligently.
+
+### added
+
+- **CDN normalization + deduplication** — recognizes 6 major CDN transform patterns (Storyblok, Thumbor, Imgix, Cloudinary, Contentful, Shopify) and collapses duplicate variants of the same image. when a hero image appears at 6 different sizes/formats, NAS picks the highest-quality version and shows a "N sizes" badge. dramatically reduces noise on CDN-heavy websites.
+- **CSS background-image extraction** — hero banners, card backgrounds, and section images set via CSS stylesheets (not just inline styles) are now discovered. walks prominent layout elements and extracts computed `background-image` URLs with proper zone/dimension context.
+- **inline SVG extraction** — logos and significant SVG elements embedded directly in HTML (never hitting the network) are now serialized and included in scan results. detects logo-like context via parent classes, IDs, ARIA labels, and structural position.
+- **expanded lazy-load coverage** — added `data-bg`, `data-full-src`, `data-image`, `data-bg-src` to the lazy-load attribute sweep.
+- **asset pipeline debug logging** — console now shows `raw → enriched → filtered` count chain for transparency.
+
+### fixed
+
+- **404/error response filtering** — `webRequest.onCompleted` now skips responses with HTTP status codes outside the 2xx-3xx range. eliminates phantom assets from failed CDN format negotiations (e.g. avif 404s on Thumbor-style CDNs).
+- **scan complete toast count** — the "Deep scan complete" notification now shows the actual visible asset count after filters, not the raw pre-filter total. includes a "(N filtered)" note when filters reduce the count.
+
+### changed
+
+- CDN badge UI — cards with deduplicated CDN variants show a sky-blue "N sizes" badge with tooltip showing CDN type.
+
+---
+
 ## v2.7.0
 
 brand intelligence release — the extension now understands brands, not just assets.
