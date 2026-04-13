@@ -4,6 +4,22 @@ all notable changes to net assets scraper.
 
 ---
 
+## v2.9.0
+
+CDN original resolution — when a page serves tiny CDN thumbnails, NAS now detects the full-size original on the CDN server and downloads that instead. no more downloading 120×168 compressed variants when the 1200×1200 original is available.
+
+### added
+
+- **CDN original resolution** — for recognized CDN patterns (Storyblok, Thumbor, Imgix, Cloudinary, Contentful, Shopify), NAS constructs the original image URL by stripping transform parameters and verifies it exists via HEAD request. if the original is available, the extension downloads the full-size version instead of the tiny thumbnail the page served. for Storyblok URLs, original dimensions are extracted from the URL path and shown on the card.
+- **original resolution badge** — verified CDN originals show a green badge with the original dimensions (e.g. "1200×1200") or file size. hover for full details including CDN type and original file size.
+- **smart filter bypass** — CDN assets with verified originals are no longer hidden by the "Hide tiny" filter. the page may serve 120×168 thumbnails, but if the 1200×1200 original is confirmed fetchable, the asset stays visible.
+
+### changed
+
+- CDN dedup now tags all CDN-matched assets with their original URL, not just multi-variant groups. single-variant CDN images also benefit from original resolution.
+
+---
+
 ## v2.8.0
 
 scanning intelligence release — the extension now understands CDN patterns, extracts assets the network layer misses, and deduplicates intelligently.

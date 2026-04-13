@@ -20,7 +20,7 @@ non-technical people use this — sales, account managers. it needs to be dead s
 - **logo detection** — flags images as logos based on alt text, class names, IDs, file paths, and DOM position (header/nav zones).
 - **UI element filtering** — identifies and hides nav icons, social icons, button arrows, favicons, and other UI chrome. uses size heuristics (≤48px), DOM context (inside `<button>`, `<nav>`), class/id pattern matching, and known icon CDN domains.
 - **deep scan** — auto-scrolls the entire page to trigger lazy-loaded images (IntersectionObserver, `data-src`, `data-lazy-src`, etc.), then runs full DOM analysis. also extracts CSS `background-image` assets and inline SVG logos that don't appear in the network layer.
-- **CDN intelligence** — recognizes transform patterns from 6 major image CDNs (Storyblok, Thumbor, Imgix, Cloudinary, Contentful, Shopify). when the same image appears at multiple sizes or formats, NAS deduplicates and picks the highest-quality version. eliminates the "6 copies of the same hero image" problem.
+- **CDN intelligence** — recognizes transform patterns from 6 major image CDNs (Storyblok, Thumbor, Imgix, Cloudinary, Contentful, Shopify). when the same image appears at multiple sizes or formats, NAS deduplicates and picks the highest-quality version. **when a page serves tiny thumbnails, NAS detects and downloads the full-size original from the CDN instead.**
 - **font detection** — finds Google Fonts links, Adobe Fonts/TypeKit, `@font-face` declarations, and computed font families from key elements.
 - **preview grid** — visual grid with real thumbnails, video frame grabs, and live font glyph rendering. type badges, logo badges, file sizes, dimensions.
 - **organized download** — selected assets go into a zip: `logos/`, `images/`, `videos/`, `fonts/` + a `brand.json` with all extracted colors, fonts, and page metadata + a self-contained `brand-guideline.html` you can open in any browser.
@@ -178,7 +178,7 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 
 ## status
 
-🟢 **v2.8 — stable release. scanning intelligence + CDN deduplication + brand intelligence.**
+🟢 **v2.9 — stable release. CDN original resolution + scanning intelligence + brand intelligence.**
 
 - [x] passive network capture via `webRequest`
 - [x] smart brand color extraction (CSS vars → meta → DOM frequency)
@@ -214,13 +214,13 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 - [x] **export tokens** — on-demand from guideline page: CSS custom properties, W3C Design Tokens JSON (Figma/Style Dictionary), markdown brand brief (AI agents). print/PDF support.
 - [x] **quick summary** — plain-text brand summary banner in the guideline page: brand name, colors, fonts, CTA style. one-click copy for sales/non-technical handoff.
 - [x] **CDN normalization** — recognizes Storyblok, Thumbor, Imgix, Cloudinary, Contentful, and Shopify CDN transform patterns. deduplicates variants of the same image at different sizes/formats and picks the highest quality version.
+- [x] **CDN original resolution** — when the page serves tiny CDN thumbnails, NAS constructs the original URL by stripping transforms, verifies via HEAD request, and downloads the full-size image instead. verified originals bypass the "Hide tiny" filter.
 - [x] **CSS background-image extraction** — discovers hero banners and section backgrounds set via CSS stylesheets (not just inline styles).
 - [x] **inline SVG extraction** — serializes logo-like SVG elements embedded directly in HTML into downloadable assets.
 - [x] **404 response filtering** — skips failed network requests, eliminating phantom assets from CDN format negotiations.
 
-**next — backlog (v2.9 candidates):**
+**next — backlog (v3.0 candidates):**
 
-- [ ] CDN original resolution — when a CDN thumbnail is detected (e.g. Storyblok `/m/120x168/`), construct and verify the full-size original URL via HEAD request. offer the original for download instead of the tiny transform.
 - [ ] size awareness (zip estimate, adnami suite limits warning)
 - [ ] base64 memory optimization (streaming fetch instead of data URLs)
 - [ ] smart color deduplication (merge near-identical hex values)
@@ -244,7 +244,8 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 
 all releases available at [github.com/fabio-cassisa/ChromeAssetsScraper/releases](https://github.com/fabio-cassisa/ChromeAssetsScraper/releases)
 
-- `v2.8` — **current stable.** scanning intelligence — CDN normalization (Storyblok/Thumbor/Imgix/Cloudinary/Contentful/Shopify), CSS background-image extraction, inline SVG extraction, 404 response filtering, asset pipeline debug logging.
+- `v2.9` — **current stable.** CDN original resolution — detects full-size originals behind CDN thumbnails via HEAD verification, downloads originals instead of tiny transforms. verified originals bypass size filters.
+- `v2.8` — scanning intelligence — CDN normalization (Storyblok/Thumbor/Imgix/Cloudinary/Contentful/Shopify), CSS background-image extraction, inline SVG extraction, 404 response filtering, asset pipeline debug logging.
 - `v2.7` — brand guideline generator, settings panel, enhanced brand extraction, font file downloads (Google Fonts CSS resolution), export tokens (CSS/Design Tokens JSON/markdown brief), quick summary for sales, print/PDF support.
 - `v2.6` — background-survivable scanning + downloads, scan cache with URL validation, SPA stale-data fix.
 - `v2.5` — background download pipeline, feed warnings, UI locks, grid batching.

@@ -86,7 +86,12 @@ function normalizeCdnUrl(url) {
         const baseUrl = fullUrl.slice(0, transformMatch.index);
         const w = parseInt(transformMatch[1]);
         const h = parseInt(transformMatch[2]);
-        return { baseUrl, cdnType: "storyblok", quality: w * h };
+        // Extract original dimensions from the path: /f/SPACE/ORIGWxH/HASH/FILE.ext
+        const origDimMatch = baseUrl.match(/\/f\/\d+\/(\d+)x(\d+)\//);
+        const originalDims = origDimMatch
+          ? { w: parseInt(origDimMatch[1]), h: parseInt(origDimMatch[2]) }
+          : null;
+        return { baseUrl, cdnType: "storyblok", quality: w * h, originalDims };
       }
       // Storyblok URL without transforms — not a CDN variant
       return null;
@@ -185,7 +190,7 @@ function deduplicateAssets(assets) {
     if (cdn) {
       const key = cdn.baseUrl;
       if (!cdnGroups.has(key)) cdnGroups.set(key, []);
-      cdnGroups.get(key).push({ asset, quality: cdn.quality, cdnType: cdn.cdnType });
+      cdnGroups.get(key).push({ asset, quality: cdn.quality, cdnType: cdn.cdnType, originalDims: cdn.originalDims, baseUrl: cdn.baseUrl });
     } else {
       ungrouped.push(asset);
     }
@@ -196,14 +201,6 @@ function deduplicateAssets(assets) {
   let totalCollapsed = 0;
 
   for (const [baseUrl, variants] of cdnGroups) {
-    if (variants.length === 1) {
-      // Single variant — keep as-is, still tag it
-      const v = variants[0];
-      v.asset.cdnType = v.cdnType;
-      deduped.push(v.asset);
-      continue;
-    }
-
     // Sort by quality desc, then by contentLength desc as tiebreaker
     variants.sort((a, b) => {
       if (b.quality !== a.quality) return b.quality - a.quality;
@@ -214,10 +211,23 @@ function deduplicateAssets(assets) {
 
     const winner = variants[0];
     winner.asset.cdnType = winner.cdnType;
-    winner.asset.cdnVariants = variants.length;
     winner.asset.cdnBaseUrl = baseUrl;
+    // Always set cdnOriginalUrl — this is the fetchable original (no transforms)
+    // Only set if baseUrl differs from the asset's current URL (i.e. transforms were stripped)
+    if (baseUrl !== winner.asset.url) {
+      winner.asset.cdnOriginalUrl = baseUrl;
+    }
+    // Attach original dimensions if extractable from URL
+    if (winner.originalDims) {
+      winner.asset.cdnOriginalDims = winner.originalDims;
+    }
+
+    if (variants.length > 1) {
+      winner.asset.cdnVariants = variants.length;
+      totalCollapsed += variants.length - 1;
+    }
+
     deduped.push(winner.asset);
-    totalCollapsed += variants.length - 1;
   }
 
   if (totalCollapsed > 0) {
@@ -740,6 +750,9 @@ function getFilteredAssets() {
   // Hide small toggle — check contentLength AND DOM dimensions AND URL hints
   if (hideSmall) {
     filtered = filtered.filter((a) => {
+      // CDN assets with verified originals bypass size checks — the thumbnail is tiny
+      // but we'll download the full-size original
+      if (a.cdnOriginalVerified) return true;
       // Known small file size
       if (a.contentLength > 0 && a.contentLength < SIZE_THRESHOLD) return false;
       // Known tiny dimensions from DOM
@@ -757,10 +770,10 @@ function getFilteredAssets() {
       if (a.isUI) return false;
       // URL-based UI detection (fallback for network-only assets)
       if (a.url && (UI_URL_PATTERNS.test(a.url) || UI_CDN_PATTERNS.test(a.url))) return false;
-      // Very small known dimensions are almost always UI
+      // Very small known dimensions are almost always UI — but not CDN originals
       const w = a.domWidth || 0;
       const h = a.domHeight || 0;
-      if (w > 0 && h > 0 && w <= 24 && h <= 24) return false;
+      if (w > 0 && h > 0 && w <= 24 && h <= 24 && !a.cdnOriginalVerified) return false;
       return true;
     });
   }
@@ -813,6 +826,20 @@ function createAssetCard(asset) {
     cdnBadge.textContent = `${asset.cdnVariants} sizes`;
     cdnBadge.title = `Best of ${asset.cdnVariants} CDN variants (${asset.cdnType})`;
     card.appendChild(cdnBadge);
+  }
+
+  // CDN original resolution badge — shows when full-size original is verified
+  if (asset.cdnOriginalVerified) {
+    const origBadge = document.createElement("span");
+    origBadge.className = "card-cdn-original-badge";
+    if (asset.cdnOriginalDims) {
+      origBadge.textContent = `${asset.cdnOriginalDims.w}×${asset.cdnOriginalDims.h}`;
+      origBadge.title = `Full-size original available (${asset.cdnOriginalDims.w}×${asset.cdnOriginalDims.h}, ${asset.cdnOriginalSize ? formatBytes(asset.cdnOriginalSize) : "size unknown"}) — ${asset.cdnType}`;
+    } else {
+      origBadge.textContent = asset.cdnOriginalSize ? formatBytes(asset.cdnOriginalSize) : "original";
+      origBadge.title = `Full-size original available (${asset.cdnOriginalSize ? formatBytes(asset.cdnOriginalSize) : "size unknown"}) — ${asset.cdnType}`;
+    }
+    card.appendChild(origBadge);
   }
 
   // Thumbnail
@@ -1090,17 +1117,19 @@ function renderBadges() {
   for (const asset of allAssets) {
     // Apply same hide-small / hide-UI logic as getFilteredAssets
     if (hideSmall) {
-      if (asset.contentLength > 0 && asset.contentLength < SIZE_THRESHOLD) continue;
-      const w = asset.domWidth || 0;
-      const h = asset.domHeight || 0;
-      if (w > 0 && h > 0 && w <= settings.minImageSize && h <= settings.minImageSize) continue;
+      if (!asset.cdnOriginalVerified) {
+        if (asset.contentLength > 0 && asset.contentLength < SIZE_THRESHOLD) continue;
+        const w = asset.domWidth || 0;
+        const h = asset.domHeight || 0;
+        if (w > 0 && h > 0 && w <= settings.minImageSize && h <= settings.minImageSize) continue;
+      }
     }
     if (hideUI) {
       if (asset.isUI) continue;
       if (asset.url && (UI_URL_PATTERNS.test(asset.url) || UI_CDN_PATTERNS.test(asset.url))) continue;
       const w = asset.domWidth || 0;
       const h = asset.domHeight || 0;
-      if (w > 0 && h > 0 && w <= 24 && h <= 24) continue;
+      if (w > 0 && h > 0 && w <= 24 && h <= 24 && !asset.cdnOriginalVerified) continue;
     }
     if (counts[asset.type] !== undefined) counts[asset.type]++;
   }
@@ -1407,6 +1436,59 @@ function applyScanResults(pData, dData, netResources) {
   if (guidelineBtn && dData) {
     guidelineBtn.disabled = false;
   }
+
+  // ── CDN original resolution (async) ───────────────────────────────
+  // After initial render, verify CDN original URLs in the background.
+  // When verified, update assets and re-render to show originals.
+  verifyCdnOriginals();
+}
+
+/**
+ * Async CDN original resolution: collect all cdnOriginalUrl candidates,
+ * send HEAD requests via background worker to verify they're fetchable,
+ * then update assets with verified original size and re-render.
+ */
+async function verifyCdnOriginals() {
+  // Collect unique CDN original URLs that differ from the served URL
+  const candidates = allAssets.filter((a) => a.cdnOriginalUrl && a.cdnOriginalUrl !== a.url);
+  if (candidates.length === 0) return;
+
+  const uniqueUrls = [...new Set(candidates.map((a) => a.cdnOriginalUrl))];
+  console.log(`[NAS] CDN resolution: verifying ${uniqueUrls.length} original URLs…`);
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: "verifyCdnOriginals",
+      urls: uniqueUrls,
+    });
+    if (!response?.results) return;
+
+    let verified = 0;
+    for (const asset of candidates) {
+      const result = response.results[asset.cdnOriginalUrl];
+      if (result?.ok) {
+        asset.cdnOriginalVerified = true;
+        asset.cdnOriginalSize = result.size;
+        asset.cdnOriginalType = result.type;
+        verified++;
+      } else {
+        // HEAD failed — remove the original URL so we don't try to download it
+        delete asset.cdnOriginalUrl;
+        delete asset.cdnOriginalDims;
+      }
+    }
+
+    console.log(`[NAS] CDN resolution: ${verified}/${candidates.length} originals verified`);
+
+    if (verified > 0) {
+      // Re-render to show updated cards with original info + unfilter verified assets
+      renderGrid();
+      renderBadges();
+      updateDownloadBar();
+    }
+  } catch (err) {
+    console.warn("[NAS] CDN resolution failed:", err);
+  }
 }
 
 function initScan() {
@@ -1500,22 +1582,27 @@ async function downloadKit() {
     // Send serializable asset data to background
     // Resolve relative URLs against the tab's origin — service worker has no page context
     const pageOrigin = new URL(tab.url).origin;
-    const serializableAssets = bgAssets.map((a) => ({
-      url: a.url.startsWith("/") ? `${pageOrigin}${a.url}`
-        : a.url.startsWith("http") || a.url.startsWith("data:") || a.url.startsWith("blob:") ? a.url
-        : `${pageOrigin}/${a.url}`,
-      type: a.type,
-      ext: a.ext,
-      contentType: a.contentType,
-      displayName: a.displayName,
-      platformTag: a.platformTag,
-      username: a.username,
-      domWidth: a.domWidth,
-      domHeight: a.domHeight,
-      isLogo: a.isLogo,
-      isMSECapture: false,
-      needsMux: false,
-    }));
+    const serializableAssets = bgAssets.map((a) => {
+      // Use CDN original URL for download when verified — get full-size instead of thumbnail
+      let downloadUrl = a.cdnOriginalVerified && a.cdnOriginalUrl ? a.cdnOriginalUrl : a.url;
+      // Resolve relative URLs against the tab's origin — service worker has no page context
+      if (downloadUrl.startsWith("/")) downloadUrl = `${pageOrigin}${downloadUrl}`;
+      else if (!downloadUrl.startsWith("http") && !downloadUrl.startsWith("data:") && !downloadUrl.startsWith("blob:")) downloadUrl = `${pageOrigin}/${downloadUrl}`;
+      return {
+        url: downloadUrl,
+        type: a.type,
+        ext: a.ext,
+        contentType: a.contentType,
+        displayName: a.displayName,
+        platformTag: a.platformTag,
+        username: a.username,
+        domWidth: a.cdnOriginalDims?.w || a.domWidth,
+        domHeight: a.cdnOriginalDims?.h || a.domHeight,
+        isLogo: a.isLogo,
+        isMSECapture: false,
+        needsMux: false,
+      };
+    });
 
     chrome.runtime.sendMessage({
       action: "downloadKit",
@@ -1707,7 +1794,9 @@ async function downloadKitInPanel() {
           const res = await fetch(result.dataUrl);
           blob = await res.blob();
         } else {
-          const response = await fetch(asset.url);
+          // Use CDN original URL when verified — download full-size instead of thumbnail
+          const fetchUrl = asset.cdnOriginalVerified && asset.cdnOriginalUrl ? asset.cdnOriginalUrl : asset.url;
+          const response = await fetch(fetchUrl);
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           blob = await response.blob();
         }

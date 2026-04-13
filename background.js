@@ -259,6 +259,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     return false;
   }
+
+  // ─── CDN original URL verification ──────────────────────────────────
+  // Panel sends candidate original URLs → background does HEAD requests
+  // to verify they exist and returns size/type info.
+  if (message.action === "verifyCdnOriginals") {
+    const urls = message.urls || [];
+    const concurrency = 6; // max parallel HEAD requests
+    (async () => {
+      const results = {};
+      // Process in batches to avoid hammering CDNs
+      for (let i = 0; i < urls.length; i += concurrency) {
+        const batch = urls.slice(i, i + concurrency);
+        const batchResults = await Promise.all(batch.map(async (url) => {
+          try {
+            const resp = await fetch(url, { method: "HEAD", redirect: "follow" });
+            if (resp.ok) {
+              const size = parseInt(resp.headers.get("content-length")) || 0;
+              const type = resp.headers.get("content-type") || "";
+              return { url, ok: true, size, type };
+            }
+            return { url, ok: false, size: 0, type: "" };
+          } catch {
+            return { url, ok: false, size: 0, type: "" };
+          }
+        }));
+        for (const r of batchResults) results[r.url] = r;
+      }
+      sendResponse({ results });
+    })();
+    return true; // async
+  }
 });
 
 // ─── Background Download Pipeline ────────────────────────────────────

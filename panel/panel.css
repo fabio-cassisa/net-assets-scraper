@@ -742,6 +742,21 @@ video.card-thumb {
   white-space: nowrap;
 }
 
+.card-cdn-original-badge {
+  position: absolute;
+  bottom: 38px;
+  left: 6px;
+  font-size: 7px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(52, 211, 153, 0.2);
+  color: #34d399;
+  backdrop-filter: blur(4px);
+  white-space: nowrap;
+}
+
 /* ─── Platform Badge (header) ─────────────────────────────────────── */
 .platform-badge {
   display: inline-flex;
