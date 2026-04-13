@@ -439,6 +439,22 @@ document.addEventListener("DOMContentLoaded", () => {
   scanCurrentTab();
 });
 
+// ─── Keep header in sync when user navigates to a different page ─────
+// The panel stays open across navigations — update siteName + platform badge
+// so the header always reflects the current tab, not the first-scanned URL.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url && tab.active) {
+    try {
+      const url = new URL(changeInfo.url);
+      document.getElementById("siteName").textContent = url.hostname;
+    } catch {
+      document.getElementById("siteName").textContent = "—";
+    }
+    detectedPlatform = detectPlatform(changeInfo.url);
+    renderPlatformBadge();
+  }
+});
+
 // ─── Scan current tab ────────────────────────────────────────────────
 
 /** Returns the scan button label based on current quickScan setting. */

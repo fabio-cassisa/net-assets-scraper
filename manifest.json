@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Net Assets Scraper",
-  "version": "2.10.2",
+  "version": "2.10.3",
   "description": "Brand asset extraction tool — grab logos, images, videos, fonts, and colors from any website into an organized brand kit.",
   "icons": {
     "16": "assets/icons/icon16.png",
