@@ -4,6 +4,27 @@ all notable changes to net assets scraper.
 
 ---
 
+## v2.10.0
+
+CDN coverage expansion — NAS now recognizes 15 image CDN and transformation patterns (up from 6), covering the majority of the web's image infrastructure. the same CDN original resolution, deduplication, and filter bypass from v2.9 now works on WordPress, Wix, Next.js, Cloudflare, Sanity, ImageKit, and more.
+
+### added
+
+- **WordPress Photon CDN** (`i0.wp.com` – `i3.wp.com`) — strips resize/crop/quality transforms from Jetpack's image proxy. reconstructs the original URL on the source domain. covers WordPress.com and self-hosted sites using Jetpack.
+- **WordPress native size suffixes** — detects `-300x200` size suffixes in `/wp-content/uploads/` paths and strips them to find the original upload. works on any WordPress site regardless of CDN setup.
+- **Wix Media Platform** (`static.wixstatic.com`, `static.parastorage.com`) — strips `/v1/fill/`, `/v1/crop/`, `/v1/fit/` transform paths to recover the original media asset.
+- **Next.js / Vercel Image Optimization** — detects `/_next/image?url=...` proxy paths, decodes the original image URL, and resolves relative paths against the page origin.
+- **Cloudflare Image Resizing** — detects `/cdn-cgi/image/params/path` transform paths and strips the parameter segment to recover the original. handles both relative and absolute original paths.
+- **Sanity.io** (`cdn.sanity.io`) — strips query-param transforms. extracts original dimensions from the filename (`HASH-WIDTHxHEIGHT.ext`), giving the same green dimension badge as Storyblok.
+- **ImageKit** (`ik.imagekit.io`) — supports both path-based (`/tr:w-300,h-200/`) and query-based (`?tr=w-300,h-200`) transform syntax.
+- **DatoCMS + Prismic** — both use Imgix under the hood. their CDN domains (`datocms-assets.com`, `images.prismic.io`) are now recognized by the Imgix handler automatically.
+
+### fixed
+
+- **Imgix false positive** — the Imgix matcher previously triggered on any URL with common query params like `?q=` or `?w=`. now requires either a known Imgix host or a numeric `w`/`h` parameter before matching. unknown hosts with only non-sizing params (e.g. `?q=search`) are no longer misclassified.
+
+---
+
 ## v2.9.1
 
 bugfix release — CDN original resolution now works correctly with Hide UI filter, and several CDN normalization edge cases are fixed.

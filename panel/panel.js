@@ -43,7 +43,7 @@ const VIDEO_FRAGMENT_PATTERNS = /\.m4s(?:\?|$)|\.ts(?:\?|$)|\/segment|\/chunk\/|
 
 // ─── CDN Normalization ───────────────────────────────────────────────
 // Recognizes CDN transform patterns and extracts a "base key" for deduplication.
-// Returns { baseUrl, cdnType, quality } or null if not a recognized CDN transform.
+// Returns { baseUrl, cdnType, quality[, originalDims] } or null if not a recognized CDN transform.
 
 // Storyblok: a.storyblok.com/f/SPACE/ORIGWxH/HASH/FILE.ext/m/WxH/filters:format(X):quality(Y)
 // Transforms are appended AFTER the filename via /m/ — must fire before generic Thumbor
@@ -57,7 +57,12 @@ const THUMBOR_INDICATORS = /\/(?:unsafe|fit-in)\/|\/\d+x\d+\/|\/(?:smart|center|
 const THUMBOR_PATTERN = /^(https?:\/\/[^/]+)\/(?:unsafe\/)?(?:fit-in\/)?(?:\d+x\d+\/)?(?:(?:smart|center|top|bottom|left|right)\/)*(?:filters:[^/]+\/)*(.+)$/;
 
 // Imgix: ?w=WIDTH&h=HEIGHT&fit=CROP&fm=FORMAT&q=QUALITY&...
-const IMGIX_PARAMS = /[?&](w|h|fit|crop|fm|auto|q|dpr|blur|sharp|cs|ch|mark|txt|exp|faceindex|facepad|orient|flip|usm|usmrad|sat|bri|con|hue|gam|vib)=/;
+// Known Imgix-powered hosts (including white-label CMSes that proxy through Imgix)
+const IMGIX_HOSTS = /\.imgix\.net$|\.datocms-assets\.com$|^images\.prismic\.io$/;
+const IMGIX_SIZING_PARAMS = /[?&](w|h)=\d/; // require at least one numeric w or h param
+const IMGIX_KEYS = ["w", "h", "fit", "crop", "fm", "auto", "q", "dpr", "blur", "sharp",
+  "cs", "ch", "mark", "txt", "exp", "faceindex", "facepad", "orient", "flip",
+  "usm", "usmrad", "sat", "bri", "con", "hue", "gam", "vib"];
 
 // Cloudinary: /image/upload/c_fill,w_WIDTH,h_HEIGHT,f_FORMAT,q_QUALITY,.../PATH
 const CLOUDINARY_PATTERN = /^(https?:\/\/[^/]+\/(?:image|video)\/upload)\/(?:[a-z]_[^/]+(?:,|\/))*(v\d+\/)?(.+)$/;
@@ -71,10 +76,39 @@ const CONTENTFUL_HOST = /images\.ctfassets\.net/;
 const SHOPIFY_HOST = /cdn\.shopify\.com/;
 const SHOPIFY_SIZE_SUFFIX = /_\d+x(?:\d+)?(?:_crop_center)?(?=\.)/;
 
+// WordPress Photon: i[0-3].wp.com proxies origin images with ?w=&h=&resize=&fit=&crop=
+const WP_PHOTON_HOST = /^i[0-3]\.wp\.com$/;
+
+// WordPress native size suffixes: /wp-content/uploads/2024/01/photo-300x200.jpg
+const WP_SIZE_SUFFIX = /(\/wp-content\/uploads\/.*)-\d+x\d+(\.\w+)$/;
+
+// Wix: static.wixstatic.com/media/HASH.ext/v1/fill/w_X,h_Y,.../name.ext
+const WIX_HOST = /^static\.wixstatic\.com$|^static\.parastorage\.com$/;
+const WIX_TRANSFORM = /^(\/media\/[^/]+\.\w+)\/v1\/(?:fill|crop|fit)\/.+$/;
+
+// Next.js / Vercel: /_next/image?url=ENCODED_URL&w=WIDTH&q=QUALITY
+const NEXTJS_PATH = /^\/_next\/image$/;
+
+// Cloudflare Image Resizing: /cdn-cgi/image/width=X,height=Y,.../ORIGINAL_PATH
+const CF_IMAGE_PATH = /^\/cdn-cgi\/image\/([^/]+)\/(.+)$/;
+
+// Sanity.io: cdn.sanity.io/images/PROJECT/DATASET/HASH-WxH.ext?w=X&h=Y&...
+const SANITY_HOST = /^cdn\.sanity\.io$/;
+const SANITY_DIMS = /-(\d+)x(\d+)\.\w+$/;
+
+// ImageKit: ik.imagekit.io/ACCOUNT/tr:w-X,h-Y/PATH  or  ?tr=w-X,h-Y
+const IMAGEKIT_HOST = /^ik\.imagekit\.io$/;
+const IMAGEKIT_PATH_TR = /\/tr:[^/]+\//;
+
 /**
  * Normalize a CDN URL to a base key for deduplication.
- * Returns { baseUrl, cdnType, quality } or null.
+ * Returns { baseUrl, cdnType, quality[, originalDims] } or null.
  * quality = estimated quality score (higher = better) for picking the best variant.
+ *
+ * Supports 15 CDN patterns:
+ *   Storyblok, Thumbor, Cloudinary, Shopify, Contentful, Imgix (+ DatoCMS, Prismic),
+ *   WordPress Photon, WordPress size suffixes, Wix, Next.js/Vercel, Cloudflare,
+ *   Sanity.io, ImageKit
  */
 function normalizeCdnUrl(url) {
   try {
@@ -96,6 +130,70 @@ function normalizeCdnUrl(url) {
         return { baseUrl, cdnType: "storyblok", quality: w * h, originalDims };
       }
       // Storyblok URL without transforms — not a CDN variant
+      return null;
+    }
+
+    // ── WordPress Photon ── (i0-i3.wp.com proxy with query param transforms)
+    if (WP_PHOTON_HOST.test(parsed.hostname)) {
+      const width = parseInt(parsed.searchParams.get("w") || parsed.searchParams.get("resize")?.split(",")[0]) || 0;
+      const height = parseInt(parsed.searchParams.get("h") || parsed.searchParams.get("resize")?.split(",")[1]) || 0;
+      // Original = the proxied URL (path after host) with no query transforms
+      const originPath = parsed.pathname.replace(/^\//, "");
+      const baseUrl = `https://${originPath}`;
+      return { baseUrl, cdnType: "wp-photon", quality: width * (height || 1) };
+    }
+
+    // ── Wix ── (static.wixstatic.com/media/HASH.ext/v1/fill|crop|fit/params/name.ext)
+    if (WIX_HOST.test(parsed.hostname)) {
+      const wixMatch = parsed.pathname.match(WIX_TRANSFORM);
+      if (wixMatch) {
+        const baseUrl = `${parsed.origin}${wixMatch[1]}`;
+        // Extract requested dimensions from transform params
+        const wMatch = parsed.pathname.match(/w_(\d+)/);
+        const hMatch = parsed.pathname.match(/h_(\d+)/);
+        const quality = (wMatch ? parseInt(wMatch[1]) : 0) * (hMatch ? parseInt(hMatch[1]) : 1);
+        return { baseUrl, cdnType: "wix", quality };
+      }
+      return null;
+    }
+
+    // ── Sanity.io ── (cdn.sanity.io — query param transforms, dims in filename)
+    if (SANITY_HOST.test(parsed.hostname)) {
+      const hasTransforms = /[?&](w|h|fit|crop|rect|blur|sharp|q|fm|auto|dpr)=/.test(parsed.search);
+      if (hasTransforms) {
+        const width = parseInt(parsed.searchParams.get("w")) || 0;
+        const height = parseInt(parsed.searchParams.get("h")) || 0;
+        const baseUrl = `${parsed.origin}${parsed.pathname}`;
+        // Extract original dimensions from filename: HASH-WxH.ext
+        const dimMatch = parsed.pathname.match(SANITY_DIMS);
+        const originalDims = dimMatch
+          ? { w: parseInt(dimMatch[1]), h: parseInt(dimMatch[2]) }
+          : null;
+        return { baseUrl, cdnType: "sanity", quality: width * (height || 1), originalDims };
+      }
+      return null;
+    }
+
+    // ── ImageKit ── (ik.imagekit.io — path-based tr:params or ?tr= query)
+    if (IMAGEKIT_HOST.test(parsed.hostname)) {
+      // Path-based: /tr:w-300,h-200/path/to/image.jpg
+      if (IMAGEKIT_PATH_TR.test(parsed.pathname)) {
+        const cleanPath = parsed.pathname.replace(/\/tr:[^/]+\//, "/");
+        const wMatch = parsed.pathname.match(/w-(\d+)/);
+        const hMatch = parsed.pathname.match(/h-(\d+)/);
+        const quality = (wMatch ? parseInt(wMatch[1]) : 0) * (hMatch ? parseInt(hMatch[1]) : 1);
+        const baseUrl = `${parsed.origin}${cleanPath}`;
+        return { baseUrl, cdnType: "imagekit", quality };
+      }
+      // Query-based: ?tr=w-300,h-200
+      if (parsed.searchParams.has("tr")) {
+        const tr = parsed.searchParams.get("tr");
+        const wMatch = tr.match(/w-(\d+)/);
+        const hMatch = tr.match(/h-(\d+)/);
+        const quality = (wMatch ? parseInt(wMatch[1]) : 0) * (hMatch ? parseInt(hMatch[1]) : 1);
+        const baseUrl = `${parsed.origin}${parsed.pathname}`;
+        return { baseUrl, cdnType: "imagekit", quality };
+      }
       return null;
     }
 
@@ -150,21 +248,65 @@ function normalizeCdnUrl(url) {
       return { baseUrl, cdnType: "contentful", quality: width * (height || 1) };
     }
 
-    // ── Imgix ──
-    if (IMGIX_PARAMS.test(parsed.search)) {
-      // Imgix-style URLs: strip all known transform params, keep the rest
+    // ── Next.js / Vercel ── (/_next/image?url=ENCODED&w=WIDTH&q=QUALITY)
+    if (NEXTJS_PATH.test(parsed.pathname)) {
+      const imageUrl = parsed.searchParams.get("url");
+      if (imageUrl) {
+        const width = parseInt(parsed.searchParams.get("w")) || 0;
+        // Resolve relative URLs against the page origin
+        let baseUrl;
+        try {
+          baseUrl = new URL(imageUrl, parsed.origin).href;
+        } catch {
+          baseUrl = imageUrl;
+        }
+        return { baseUrl, cdnType: "nextjs", quality: width };
+      }
+    }
+
+    // ── Cloudflare Image Resizing ── (/cdn-cgi/image/PARAMS/ORIGINAL_PATH)
+    const cfMatch = parsed.pathname.match(CF_IMAGE_PATH);
+    if (cfMatch) {
+      const params = cfMatch[1]; // e.g. "width=300,height=200,fit=crop"
+      const originalPath = cfMatch[2]; // e.g. "images/hero.jpg" or absolute URL
+      const wMatch = params.match(/width=(\d+)/);
+      const hMatch = params.match(/height=(\d+)/);
+      const quality = (wMatch ? parseInt(wMatch[1]) : 0) * (hMatch ? parseInt(hMatch[1]) : 1);
+      // Original path can be relative or absolute URL
+      let baseUrl;
+      if (/^https?:\/\//.test(originalPath)) {
+        baseUrl = originalPath;
+      } else {
+        baseUrl = `${parsed.origin}/${originalPath}`;
+      }
+      return { baseUrl, cdnType: "cloudflare", quality };
+    }
+
+    // ── WordPress native size suffixes ── (photo-300x200.jpg → photo.jpg)
+    const wpMatch = parsed.pathname.match(WP_SIZE_SUFFIX);
+    if (wpMatch) {
+      const dimPart = parsed.pathname.match(/-(\d+)x(\d+)\.\w+$/);
+      const width = dimPart ? parseInt(dimPart[1]) : 0;
+      const height = dimPart ? parseInt(dimPart[2]) : 0;
+      const cleanPath = parsed.pathname.replace(/-\d+x\d+(\.\w+)$/, "$1");
+      const baseUrl = `${parsed.origin}${cleanPath}${parsed.search}`;
+      return { baseUrl, cdnType: "wordpress", quality: width * height };
+    }
+
+    // ── Imgix ── (known hosts OR unknown hosts with numeric w/h params)
+    // Known Imgix hosts match immediately; unknown hosts need numeric w or h to avoid false positives
+    const isKnownImgix = IMGIX_HOSTS.test(parsed.hostname);
+    const hasImgixSizing = IMGIX_SIZING_PARAMS.test(parsed.search);
+    if (isKnownImgix || hasImgixSizing) {
       const width = parseInt(parsed.searchParams.get("w")) || 0;
       const height = parseInt(parsed.searchParams.get("h")) || 0;
-      const imgixKeys = ["w", "h", "fit", "crop", "fm", "auto", "q", "dpr", "blur", "sharp",
-        "cs", "ch", "mark", "txt", "exp", "faceindex", "facepad", "orient", "flip",
-        "usm", "usmrad", "sat", "bri", "con", "hue", "gam", "vib"];
       const cleanParams = new URLSearchParams(parsed.search);
-      for (const key of imgixKeys) cleanParams.delete(key);
+      for (const key of IMGIX_KEYS) cleanParams.delete(key);
       const qs = cleanParams.toString();
       const baseUrl = `${parsed.origin}${parsed.pathname}${qs ? "?" + qs : ""}`;
       // Only treat as Imgix if we actually stripped meaningful params
       if (baseUrl !== fullUrl) {
-        return { baseUrl, cdnType: "imgix", quality: width * (height || 1) };
+        return { baseUrl, cdnType: isKnownImgix ? "imgix" : "imgix-like", quality: width * (height || 1) };
       }
     }
 
