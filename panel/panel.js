@@ -387,7 +387,7 @@ function deduplicateAssets(assets) {
 const PLATFORM_PATTERNS = {
   instagram: /instagram\.com/,
   youtube:   /youtube\.com|youtu\.be/,
-  twitter:   /twitter\.com|x\.com/,
+  twitter:   /twitter\.com|:\/\/(?:www\.)?x\.com(?:\/|$)/,
   tiktok:    /tiktok\.com/,
   facebook:  /facebook\.com/,
   vimeo:     /vimeo\.com/,
@@ -439,6 +439,11 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ─── Scan current tab ────────────────────────────────────────────────
+
+/** Returns the scan button label based on current quickScan setting. */
+function scanButtonLabel() {
+  return settings.quickScan ? "Quick Scan ⟳" : "Deep Scan ⟳";
+}
 async function scanCurrentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
@@ -1558,7 +1563,7 @@ function finishScanUI(toastMsg) {
   document.body.classList.remove("scanning");
   if (scanProgress) scanProgress.style.display = "none";
   if (btn) btn.disabled = false;
-  if (btnText) btnText.textContent = "Deep Scan ⟳";
+  if (btnText) btnText.textContent = scanButtonLabel();
   if (toastMsg) showToast(toastMsg);
 }
 
@@ -1602,6 +1607,15 @@ function applyScanResults(pData, dData, netResources) {
   verifyCdnOriginals();
 }
 
+/** Show final scan-complete toast with accurate counts (called after CDN verification). */
+function showScanCompleteToast() {
+  const visibleCount = getFilteredAssets().length;
+  const totalCount = allAssets.length;
+  const filterNote = visibleCount < totalCount ? ` (${totalCount - visibleCount} filtered)` : "";
+  const mode = settings.quickScan ? "Quick" : "Deep";
+  showToast(`${mode} scan complete — ${visibleCount} assets${filterNote}`);
+}
+
 /**
  * Async CDN original resolution: collect all cdnOriginalUrl candidates,
  * send HEAD requests via background worker to verify they're fetchable,
@@ -1610,7 +1624,11 @@ function applyScanResults(pData, dData, netResources) {
 async function verifyCdnOriginals() {
   // Collect unique CDN original URLs that differ from the served URL
   const candidates = allAssets.filter((a) => a.cdnOriginalUrl && a.cdnOriginalUrl !== a.url);
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) {
+    // No CDN candidates — show final scan toast with current counts
+    showScanCompleteToast();
+    return;
+  }
 
   const uniqueUrls = [...new Set(candidates.map((a) => a.cdnOriginalUrl))];
   console.log(`[NAS] CDN resolution: verifying ${uniqueUrls.length} original URLs…`);
@@ -1647,8 +1665,11 @@ async function verifyCdnOriginals() {
       renderBadges();
       updateDownloadBar();
     }
+    // Show final scan toast with accurate post-verification counts
+    showScanCompleteToast();
   } catch (err) {
     console.warn("[NAS] CDN resolution failed:", err);
+    showScanCompleteToast(); // Still show toast even if CDN verification fails
   }
 }
 
@@ -1680,11 +1701,10 @@ function initScan() {
       scanFill.style.width = "100%";
       scanText.textContent = "Done";
       applyScanResults(msg.platformData, msg.domData, msg.networkResources);
-      const visibleCount = getFilteredAssets().length;
-      const totalCount = allAssets.length;
-      const filterNote = visibleCount < totalCount ? ` (${totalCount - visibleCount} filtered)` : "";
+      // NOTE: asset count is deferred — verifyCdnOriginals() runs async and
+      // changes the visible count. The final toast fires from there instead.
       setTimeout(() => {
-        finishScanUI(`Deep scan complete — ${visibleCount} assets${filterNote}`);
+        finishScanUI(); // no toast — CDN verification will show the final count
       }, 600); // Brief flash of 100%
     }
 
@@ -2368,6 +2388,9 @@ function initSettings() {
     autoLogosToggle.checked = settings.autoSelectLogos;
     minSizeSelect.value = String(settings.minImageSize);
     quickScanToggle.checked = settings.quickScan;
+    // Set scan button label to match persisted mode
+    const btnText = document.getElementById("refreshBtn")?.querySelector("span");
+    if (btnText) btnText.textContent = scanButtonLabel();
   });
 
   // Gear button toggles panel visibility
@@ -2399,6 +2422,9 @@ function initSettings() {
   quickScanToggle.addEventListener("change", () => {
     settings.quickScan = quickScanToggle.checked;
     chrome.storage.local.set({ nasSettings: settings });
+    // Update scan button label reactively
+    const btnText = document.getElementById("refreshBtn")?.querySelector("span");
+    if (btnText) btnText.textContent = scanButtonLabel();
   });
 
   // ── Open Brand Guideline button ──

@@ -730,7 +730,7 @@ video.card-thumb {
 .card-cdn-badge {
   position: absolute;
   top: 6px;
-  left: 6px;
+  left: 28px;
   font-size: 7px;
   font-weight: 600;
   letter-spacing: 0.3px;

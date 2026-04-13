@@ -1325,7 +1325,7 @@ function generateBrandGuideHTML(kit, { embedScript = true } = {}) {
     <label class="theme-label" for="themeToggle" title="Switch light/dark theme"><span class="icon-moon">🌙</span><span class="icon-sun">☀️</span></label>
   </header>
 
-  <div class="copy-hint-banner">click any value to select · ${"{Cmd}"}+C to copy</div>
+  <div class="copy-hint-banner">click any value to select · ${navigator.platform?.includes("Mac") ? "⌘" : "Ctrl"}+C to copy</div>
 
   <div class="quick-summary">
     <div class="quick-summary-header">
@@ -1384,7 +1384,7 @@ function generateBrandGuideHTML(kit, { embedScript = true } = {}) {
   </section>
 
   <footer class="guide-footer">
-    <p>Extracted by <strong>Net Assets Scraper</strong> v2.7 · ${exportDate}</p>
+    <p>Extracted by <strong>Net Assets Scraper</strong> v${chrome.runtime.getManifest().version} · ${exportDate}</p>
   </footer>
 
 </div>

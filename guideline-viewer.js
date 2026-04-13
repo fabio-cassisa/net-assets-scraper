@@ -633,7 +633,7 @@
 
   // Footer
   html += `<footer class="guide-footer">
-    <p>Extracted by <strong>Net Assets Scraper</strong> v2.7 · ${exportDate}</p>
+    <p>Extracted by <strong>Net Assets Scraper</strong> v${chrome.runtime.getManifest().version} · ${exportDate}</p>
   </footer>`;
 
   // ── Inject into page ──

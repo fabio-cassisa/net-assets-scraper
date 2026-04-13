@@ -298,6 +298,10 @@ function extractImageContext() {
             if (u) urls.push(u);
           });
         } else {
+          // Guard: many CMS platforms store non-URL values in data-* attributes
+          // (e.g. WordPress uses data-image for attachment IDs like "1024").
+          // Only accept values that look like actual URLs or paths.
+          if (/^\d+$/.test(val) || (!val.includes("/") && !val.includes("."))) continue;
           urls.push(val.startsWith("//") ? "https:" + val : val);
         }
       }
@@ -324,6 +328,8 @@ function extractImageContext() {
 
     for (const url of urls) {
       if (seen.has(url) || url.startsWith("data:")) continue;
+      // Safety net: reject values that aren't real URLs (e.g. numeric IDs, CSS classes)
+      if (/^\d+$/.test(url) || (!url.includes("/") && !url.includes(".") && !url.startsWith("http"))) continue;
       seen.add(url);
 
       const context = getElementContext(el);
@@ -730,7 +736,7 @@ function extractTypographyScale() {
 
 function extractSocialLinks() {
   const SOCIAL_PATTERNS = {
-    twitter:   /(?:twitter\.com|x\.com)\/(?!share|intent|search|hashtag)([^\s/?#]+)/i,
+    twitter:   /(?:twitter\.com|(?:^|\/\/)(?:www\.)?x\.com)\/(?!share|intent|search|hashtag)([^\s/?#]+)/i,
     instagram: /instagram\.com\/(?!p\/|explore|accounts|reel)([^\s/?#]+)/i,
     linkedin:  /linkedin\.com\/(?:company|in)\/([^\s/?#]+)/i,
     facebook:  /facebook\.com\/(?!sharer|share|dialog)([^\s/?#]+)/i,
@@ -986,7 +992,7 @@ async function fetchBlobViaMainWorld(url) {
   const host = window.location.hostname;
   const hasMainWorldHandler = host.includes("tiktok.com")
     || host.includes("twitter.com")
-    || host.includes("x.com")
+    || (host === "x.com" || host.endsWith(".x.com"))
     || host.includes("facebook.com");
   // NOTE: Vimeo excluded — progressive CDN URLs are self-authenticated (token in URL)
 
