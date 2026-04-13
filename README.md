@@ -178,7 +178,7 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 
 ## status
 
-🟢 **v2.11.0 — stable release. 15 CDN patterns + CDN original resolution + scanning intelligence + brand intelligence. full code audit — all known bugs fixed.**
+🟢 **v2.12.0 — stable release. smart filenames for AI asset pipelines. every asset gets a semantic, machine-readable name (`brand-role-WxH.ext`) instead of CDN garbage. optimized for Adnami AI Creative Builder asset manifests.**
 
 - [x] passive network capture via `webRequest`
 - [x] smart brand color extraction (CSS vars → meta → DOM frequency)
@@ -215,6 +215,7 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 - [x] **quick summary** — plain-text brand summary banner in the guideline page: brand name, colors, fonts, CTA style. one-click copy for sales/non-technical handoff.
 - [x] **CDN normalization** — recognizes Storyblok, Thumbor, Imgix, Cloudinary, Contentful, Shopify, WordPress Photon, WordPress size suffixes, Wix, Next.js/Vercel, Cloudflare, Sanity.io, ImageKit, DatoCMS, and Prismic CDN transform patterns. deduplicates variants of the same image at different sizes/formats and picks the highest quality version.
 - [x] **CDN original resolution** — when the page serves tiny CDN thumbnails, NAS constructs the original URL by stripping transforms, verifies via HEAD request, and downloads the full-size image instead. verified originals bypass the "Hide tiny" filter.
+- [x] **smart filenames** — every asset gets a semantic, machine-readable filename (`brand-role-WxH.ext`) instead of CDN garbage. 4-tier naming: platform username (social media), brand slug + semantic role (images/videos), font family + weight + style (fonts), or sanitized display name (audio). brand slug derived from `og:site_name` → hostname fallback. roles assigned from logo detection → zone context → alt text → DOM position. font files matched via `@font-face` URL map with orphan heuristic for obfuscated CDN fonts. panel UI labels match zip contents.
 - [x] **CSS background-image extraction** — discovers hero banners and section backgrounds set via CSS stylesheets (not just inline styles).
 - [x] **inline SVG extraction** — serializes logo-like SVG elements embedded directly in HTML into downloadable assets.
 - [x] **404 response filtering** — skips failed network requests, eliminating phantom assets from CDN format negotiations.
@@ -244,7 +245,8 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 
 all releases available at [github.com/fabio-cassisa/ChromeAssetsScraper/releases](https://github.com/fabio-cassisa/ChromeAssetsScraper/releases)
 
-- `v2.11` — **current stable.** code health release: inline SVG logos now use data: URIs (downloadable from panel), UI detection no longer false-positives on content images with social media keywords in URLs, DOM color extraction capped for performance on heavy pages, in-panel download limited to 6 concurrent fetches.
+- `v2.12` — **current stable.** smart filenames — every asset gets a semantic, predictable name (`brand-role-WxH.ext`) instead of CDN garbage hashes. 4-tier naming system: platform+username for social media, brand slug + semantic role for images/videos, font family + weight + style for fonts, sanitized display name for audio. brand slug from `og:site_name` metadata. role vocabulary: logo, video, hero, alt-text slug, header, product, footer, sidebar, image. font URL matching via `@font-face` declarations + orphan heuristic for obfuscated CDN fonts. panel UI names match zip filenames. zip named `{brand}-brand-kit-{date}.zip`. optimized for AI asset manifest pipelines where filenames are the primary asset identifier.
+- `v2.11` — code health release: inline SVG logos now use data: URIs (downloadable from panel), UI detection no longer false-positives on content images with social media keywords in URLs, DOM color extraction capped for performance on heavy pages, in-panel download limited to 6 concurrent fetches.
 - `v2.10` — CDN coverage expansion — 15 image CDN patterns (WordPress, Wix, Next.js, Cloudflare, Sanity, ImageKit, DatoCMS, Prismic added). Imgix false positive fix. v2.10.1 fixed 9 bugs from full code audit: numeric data-attribute IDs parsed as URLs, `x.com` regex false-positives on `wix.com` (3 locations), stale scan-complete toast count, hardcoded version strings, `{Cmd}` placeholder, CDN badge/checkbox CSS overlap, reactive scan button label. v2.10.2 fixed 3 correctness issues: `downloadKitInPanel()` ignoring its parameter, duplicated filter logic between badges and grid, download button race condition during CDN verification. v2.10.3 fixed stale panel header on tab navigation.
 - `v2.9` — CDN original resolution — detects full-size originals behind CDN thumbnails via HEAD verification, downloads originals instead of tiny transforms. verified originals bypass size filters. v2.9.1 fixed Hide UI filter bypass, Thumbor/Storyblok regex edge cases, HEAD timeout, download size estimates.
 - `v2.8` — scanning intelligence — CDN normalization (Storyblok/Thumbor/Imgix/Cloudinary/Contentful/Shopify), CSS background-image extraction, inline SVG extraction, 404 response filtering, asset pipeline debug logging.

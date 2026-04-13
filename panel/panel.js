@@ -767,28 +767,45 @@ function enrichAssets(networkResources, imageContext, platformResult) {
 }
 
 // ─── Display name builder ────────────────────────────────────────────
+// CDN garbage patterns — URL segments that look like hashes, transforms, or encoded data
+const CDN_GARBAGE_RE = /^[a-f0-9]{12,}|^[a-z0-9_-]{40,}|filters[_(]|format[_(]|quality[_(]|optimize[_(]|resize[_(]|aHR0c|base64|__cb\d|_next|_nuxt/i;
+
 function buildDisplayName(resource, ctx) {
-  // Priority 1: alt text
+  // Priority 1: alt text (best semantic signal)
   if (ctx?.alt && ctx.alt.length > 2 && ctx.alt.length < 60) {
     return sanitizeFilename(ctx.alt) + "." + (resource.ext || guessExt(resource));
   }
 
-  // Priority 2: Clean URL filename
+  // Priority 2: Clean URL filename — but reject CDN hash garbage
   try {
     const pathname = new URL(resource.url).pathname;
     const segment = pathname.substring(pathname.lastIndexOf("/") + 1);
-    if (segment && segment.length > 1 && segment.length < 80 && segment.includes(".")) {
+    const basePart = segment.replace(/\.[^.]+$/, ""); // strip extension for garbage check
+    if (segment && segment.length > 1 && segment.length < 80 && segment.includes(".")
+        && !CDN_GARBAGE_RE.test(basePart)) {
       return decodeURIComponent(segment);
     }
-    if (segment && segment.length > 1 && segment.length < 40) {
+    if (segment && segment.length > 1 && segment.length < 40
+        && !CDN_GARBAGE_RE.test(basePart)) {
       return segment + "." + (resource.ext || guessExt(resource));
     }
   } catch { /* skip */ }
 
-  // Priority 3: Context-based name
-  const prefix = ctx?.isLogo ? "logo" : (ctx?.context || "asset");
+  // Priority 3: Smart context-based name using brand slug + zone/role
   const ext = resource.ext || guessExt(resource);
-  return `${prefix}-${Date.now().toString(36)}.${ext}`;
+  const brandSlug = deriveBrandSlug(domData?.pageMeta);
+  const role = ctx?.isLogo ? "logo"
+    : (ctx?.context === "hero") ? "hero"
+    : (ctx?.context === "header") ? "header"
+    : (ctx?.context === "main") ? "product"
+    : (ctx?.context === "footer") ? "footer"
+    : (ctx?.context === "sidebar") ? "sidebar"
+    : (resource.type === "video") ? "video"
+    : "image";
+  const w = ctx?.width || 0;
+  const h = ctx?.height || 0;
+  const dims = (w > 0 && h > 0) ? `-${w}x${h}` : "";
+  return `${brandSlug}-${role}${dims}.${ext}`;
 }
 
 function guessExt(resource) {
@@ -1791,6 +1808,8 @@ async function downloadKit() {
         domWidth: a.cdnOriginalDims?.w || a.domWidth,
         domHeight: a.cdnOriginalDims?.h || a.domHeight,
         isLogo: a.isLogo,
+        alt: a.alt || "",
+        context: a.context || "",
         isMSECapture: false,
         needsMux: false,
       };
@@ -1859,6 +1878,10 @@ async function downloadKitInPanel(selectedAssets) {
 
     // Track used filenames to avoid duplicates
     const usedNames = new Map(); // folder → Set<name>
+
+    // Brand slug + font URL map for smart filenames (v2.12.0)
+    const brandSlug = deriveBrandSlug(domData?.pageMeta);
+    const fontUrlMap = buildFontUrlMap(domData?.fontInfo);
 
     let completed = 0;
     let failed = 0;
@@ -2015,7 +2038,7 @@ async function downloadKitInPanel(selectedAssets) {
           }
         }
 
-        let fileName = buildFinalFilename(asset, ext);
+        let fileName = buildFinalFilename(asset, ext, brandSlug, fontUrlMap);
 
         // Pick the right folder
         const targetFolder = asset.isLogo ? logosFolder : (folders[asset.type] || folders.image);
@@ -2147,34 +2170,165 @@ function getActualExtension(asset, blobType) {
   return guessExt(asset);
 }
 
-function buildFinalFilename(asset, ext) {
-  // ── Smart naming: @username-platformTag-WxH.ext ──────────────────
+// ─── Smart Filename Helpers (v2.12.0) ────────────────────────────────
+// Machine-friendly naming for AI Creative Builder asset manifests.
+// Pattern: {brand}-{role}-{WxH}.{ext}
+// The AI sees filenames as semantic tokens — predictable controlled vocabulary
+// beats CDN hash garbage for both AI asset selection and human prompts.
+
+const GENERIC_ALT_RE = /^(image|photo|picture|img|banner|untitled|null|undefined|logo|icon|default|placeholder|thumbnail|thumb|cover|background)$/i;
+const HASH_LIKE_RE = /^[a-f0-9]{8,}$|^[A-Za-z0-9+/=]{20,}$/;
+const SYSTEM_FONTS = new Set(["arial", "helvetica", "helvetica neue", "times new roman", "times", "courier new", "courier", "georgia", "verdana", "tahoma", "trebuchet ms", "impact", "comic sans ms", "lucida console", "lucida sans unicode", "palatino linotype", "book antiqua", "segoe ui", "roboto", "open sans", "noto sans", "sf pro", "sf pro display", "sf pro text", "-apple-system", "blinkmacsystemfont"]);
+
+function buildFontUrlMap(fontInfo) {
+  const map = new Map();
+  if (!fontInfo) return map;
+  const declared = fontInfo.declared || [];
+  const strip = (u) => { try { return u.split("?")[0]; } catch { return u; } };
+
+  // 1. URL-based lookup (exact match after stripping query params)
+  const accountedFamilies = new Set();
+  for (const font of declared) {
+    if (font.url && !font.url.startsWith("data:")) {
+      map.set(strip(font.url), font);
+    }
+    if (font.allUrls) {
+      for (const u of font.allUrls) {
+        if (!u.startsWith("data:")) map.set(strip(u), font);
+      }
+    }
+    // Any declared font with a known name is accounted for (Google Fonts, @font-face, data: embedded)
+    if (font.name) accountedFamilies.add(font.name.toLowerCase());
+  }
+
+  // 2. Heuristic: unaccounted font families from computed styles
+  // These are families used on the page but NOT matched to any declared URL
+  // (typically commercial fonts served through obfuscating CDNs)
+  const used = fontInfo.used || [];
+  const orphanFamilies = used.filter((f) => {
+    const lower = f.toLowerCase();
+    return !SYSTEM_FONTS.has(lower) && !accountedFamilies.has(lower);
+  });
+  // Store as a queue — unmatched font assets will pop names off this list
+  map._orphanQueue = orphanFamilies;
+
+  return map;
+}
+
+function deriveBrandSlug(pageMeta) {
+  if (!pageMeta) return "brand";
+  // Prefer og:site_name — cleanest brand signal
+  if (pageMeta.siteName) {
+    const slug = pageMeta.siteName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 30);
+    if (slug.length >= 2) return slug;
+  }
+  // Fallback: hostname without www + TLD
+  if (pageMeta.hostname) {
+    const host = pageMeta.hostname.replace(/^www\./, "");
+    const parts = host.split(".");
+    if (parts.length > 2) return parts.slice(0, -2).join("-").slice(0, 30);
+    return (parts[0] || "brand").slice(0, 30);
+  }
+  return "brand";
+}
+
+function smartAssetRole(asset) {
+  // Controlled vocabulary — predictable tokens an AI learns across 100s of brand kits
+  if (asset.isLogo) return "logo";
+  if (asset.type === "video") return "video";
+
+  // Hero zone = strongest placement signal, always wins
+  const zone = (asset.context || "").toLowerCase();
+  if (zone === "hero") return "hero";
+
+  // Alt text: richest semantic signal when it's genuinely descriptive
+  if (asset.alt) {
+    const raw = asset.alt.trim();
+    if (raw.length >= 3 && raw.length <= 60) {
+      const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      if (slug.length >= 3 && !GENERIC_ALT_RE.test(raw) && !HASH_LIKE_RE.test(slug)) {
+        if (slug.length <= 30) return slug;
+        const cut = slug.lastIndexOf("-", 30);
+        return cut >= 3 ? slug.slice(0, cut) : slug.slice(0, 30);
+      }
+    }
+  }
+
+  // Zone-based fallback
+  if (zone === "header") return "header";
+  if (zone === "main") return "product";
+  if (zone === "footer") return "footer";
+  if (zone === "sidebar") return "sidebar";
+
+  return "image";
+}
+
+function buildFinalFilename(asset, ext, brandSlug, fontUrlMap) {
+  // ── Smart naming: machine-friendly for AI Creative Builder ────────
   // Tier 1: Platform asset with username → @nike-twitter-banner-1500x500.jpg
   // Tier 2: Platform asset, no username  → twitter-banner-1500x500.jpg
-  // Tier 3: Non-platform asset           → alt text / URL-derived fallback
+  // Tier 3: Non-platform image/video     → {brand}-{role}-{WxH}.{ext}
+  // Tier 4: Fonts/audio                  → family-weight from @font-face, or displayName
   const e = ext || guessExt(asset);
 
   if (asset.platformTag) {
     const parts = [];
     if (asset.username) parts.push(`@${asset.username.replace(/^@/, "")}`);
     parts.push(asset.platformTag);
-    // Append dimensions when known (useful for picking the right size)
     const w = asset.domWidth || 0;
     const h = asset.domHeight || 0;
     if (w > 0 && h > 0) parts.push(`${w}x${h}`);
     return sanitizeFilename(parts.join("-") + "." + e);
   }
 
-  // Non-platform: fall back to display name with corrected extension
-  let name = asset.displayName;
-  const dotIdx = name.lastIndexOf(".");
-  if (dotIdx > 0) {
-    const currentExt = name.substring(dotIdx + 1).toLowerCase();
-    if (currentExt !== e && e) name = name.substring(0, dotIdx) + "." + e;
-  } else if (e) {
-    name = name + "." + e;
+  // Fonts: recover family name from @font-face declarations when URL is a CDN hash
+  if (asset.type === "font") {
+    const stripped = asset.url?.split("?")[0];
+    const fontMeta = stripped && fontUrlMap?.get(stripped);
+    if (fontMeta?.name) {
+      const safeName = fontMeta.name.replace(/[^a-zA-Z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+      const weight = fontMeta.weight || "400";
+      const italic = fontMeta.style === "italic" ? "-italic" : "";
+      return sanitizeFilename(`${safeName}-${weight}${italic}.${e}`);
+    }
+    // Heuristic: assign unaccounted font family name from computed styles
+    // Only if the current displayName looks like a CDN hash (not already a real font name)
+    const baseName = (asset.displayName || "").replace(/\.[^.]+$/, "");
+    const isGarbageName = /^(asset|font|file|download|media)[-_]/.test(baseName.toLowerCase())
+      || /^[a-f0-9]{8,}$/i.test(baseName)
+      || /^[a-z0-9]{20,}$/i.test(baseName.replace(/[-_]/g, ""));
+    const orphans = fontUrlMap?._orphanQueue;
+    if (isGarbageName && orphans?.length) {
+      const family = orphans.shift();
+      const safeName = family.replace(/[^a-zA-Z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+      return sanitizeFilename(`${safeName}.${e}`);
+    }
   }
-  return sanitizeFilename(name);
+
+  // Fonts & audio fallback: keep displayName
+  if (asset.type === "font" || asset.type === "audio") {
+    let name = asset.displayName || "asset";
+    const dotIdx = name.lastIndexOf(".");
+    if (dotIdx > 0) {
+      const currentExt = name.substring(dotIdx + 1).toLowerCase();
+      if (currentExt !== e && e) name = name.substring(0, dotIdx) + "." + e;
+    } else if (e) {
+      name = name + "." + e;
+    }
+    return sanitizeFilename(name);
+  }
+
+  // Smart Tier 3: semantic naming for images & videos
+  const slug = brandSlug || "asset";
+  const role = smartAssetRole(asset);
+  const w = asset.domWidth || 0;
+  const h = asset.domHeight || 0;
+  const dims = (w > 0 && h > 0) ? `-${w}x${h}` : "";
+  return sanitizeFilename(`${slug}-${role}${dims}.${e}`);
 }
 
 function deduplicateFilename(name, usedSet) {

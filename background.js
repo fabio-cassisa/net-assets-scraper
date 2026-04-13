@@ -373,7 +373,83 @@ function bgGuessExt(asset, blobType) {
 }
 
 /** Build filename using the same smart naming logic as the panel. */
-function bgBuildFilename(asset, ext) {
+// ─── Smart Filename Helpers (v2.12.0) ────────────────────────────────
+const BG_GENERIC_ALT_RE = /^(image|photo|picture|img|banner|untitled|null|undefined|logo|icon|default|placeholder|thumbnail|thumb|cover|background)$/i;
+const BG_HASH_LIKE_RE = /^[a-f0-9]{8,}$|^[A-Za-z0-9+/=]{20,}$/;
+const BG_SYSTEM_FONTS = new Set(["arial", "helvetica", "helvetica neue", "times new roman", "times", "courier new", "courier", "georgia", "verdana", "tahoma", "trebuchet ms", "impact", "comic sans ms", "lucida console", "lucida sans unicode", "palatino linotype", "book antiqua", "segoe ui", "roboto", "open sans", "noto sans", "sf pro", "sf pro display", "sf pro text", "-apple-system", "blinkmacsystemfont"]);
+
+function bgBuildFontUrlMap(fontInfo) {
+  const map = new Map();
+  if (!fontInfo) return map;
+  const declared = fontInfo.declared || [];
+  const strip = (u) => { try { return u.split("?")[0]; } catch { return u; } };
+
+  const accountedFamilies = new Set();
+  for (const font of declared) {
+    if (font.url && !font.url.startsWith("data:")) {
+      map.set(strip(font.url), font);
+    }
+    if (font.allUrls) {
+      for (const u of font.allUrls) {
+        if (!u.startsWith("data:")) map.set(strip(u), font);
+      }
+    }
+    if (font.name) accountedFamilies.add(font.name.toLowerCase());
+  }
+
+  const used = fontInfo.used || [];
+  const orphanFamilies = used.filter((f) => {
+    const lower = f.toLowerCase();
+    return !BG_SYSTEM_FONTS.has(lower) && !accountedFamilies.has(lower);
+  });
+  map._orphanQueue = orphanFamilies;
+
+  return map;
+}
+
+function bgDeriveBrandSlug(pageMeta) {
+  if (!pageMeta) return "brand";
+  if (pageMeta.siteName) {
+    const slug = pageMeta.siteName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 30);
+    if (slug.length >= 2) return slug;
+  }
+  if (pageMeta.hostname) {
+    const host = pageMeta.hostname.replace(/^www\./, "");
+    const parts = host.split(".");
+    if (parts.length > 2) return parts.slice(0, -2).join("-").slice(0, 30);
+    return (parts[0] || "brand").slice(0, 30);
+  }
+  return "brand";
+}
+
+function bgSmartAssetRole(asset) {
+  if (asset.isLogo) return "logo";
+  if (asset.type === "video") return "video";
+  const zone = (asset.context || "").toLowerCase();
+  if (zone === "hero") return "hero";
+  if (asset.alt) {
+    const raw = asset.alt.trim();
+    if (raw.length >= 3 && raw.length <= 60) {
+      const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      if (slug.length >= 3 && !BG_GENERIC_ALT_RE.test(raw) && !BG_HASH_LIKE_RE.test(slug)) {
+        if (slug.length <= 30) return slug;
+        const cut = slug.lastIndexOf("-", 30);
+        return cut >= 3 ? slug.slice(0, cut) : slug.slice(0, 30);
+      }
+    }
+  }
+  if (zone === "header") return "header";
+  if (zone === "main") return "product";
+  if (zone === "footer") return "footer";
+  if (zone === "sidebar") return "sidebar";
+  return "image";
+}
+
+function bgBuildFilename(asset, ext, brandSlug, fontUrlMap) {
   const e = ext || bgGuessExt(asset, "");
   if (asset.platformTag) {
     const parts = [];
@@ -384,15 +460,51 @@ function bgBuildFilename(asset, ext) {
     if (w > 0 && h > 0) parts.push(`${w}x${h}`);
     return bgSanitize(parts.join("-") + "." + e);
   }
-  let name = asset.displayName || "asset";
-  const dotIdx = name.lastIndexOf(".");
-  if (dotIdx > 0) {
-    const currentExt = name.substring(dotIdx + 1).toLowerCase();
-    if (currentExt !== e && e) name = name.substring(0, dotIdx) + "." + e;
-  } else if (e) {
-    name = name + "." + e;
+
+  // Fonts: recover family name from @font-face declarations when URL is a CDN hash
+  if (asset.type === "font") {
+    const stripped = asset.url?.split("?")[0];
+    const fontMeta = stripped && fontUrlMap?.get(stripped);
+    if (fontMeta?.name) {
+      const safeName = fontMeta.name.replace(/[^a-zA-Z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+      const weight = fontMeta.weight || "400";
+      const italic = fontMeta.style === "italic" ? "-italic" : "";
+      return bgSanitize(`${safeName}-${weight}${italic}.${e}`);
+    }
+    // Heuristic: assign unaccounted font family name from computed styles
+    // Only if the current displayName looks like a CDN hash (not already a real font name)
+    const baseName = (asset.displayName || "").replace(/\.[^.]+$/, "");
+    const isGarbageName = /^(asset|font|file|download|media)[-_]/.test(baseName.toLowerCase())
+      || /^[a-f0-9]{8,}$/i.test(baseName)
+      || /^[a-z0-9]{20,}$/i.test(baseName.replace(/[-_]/g, ""));
+    const orphans = fontUrlMap?._orphanQueue;
+    if (isGarbageName && orphans?.length) {
+      const family = orphans.shift();
+      const safeName = family.replace(/[^a-zA-Z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+      return bgSanitize(`${safeName}.${e}`);
+    }
   }
-  return bgSanitize(name);
+
+  // Fonts & audio fallback: keep displayName
+  if (asset.type === "font" || asset.type === "audio") {
+    let name = asset.displayName || "asset";
+    const dotIdx = name.lastIndexOf(".");
+    if (dotIdx > 0) {
+      const currentExt = name.substring(dotIdx + 1).toLowerCase();
+      if (currentExt !== e && e) name = name.substring(0, dotIdx) + "." + e;
+    } else if (e) {
+      name = name + "." + e;
+    }
+    return bgSanitize(name);
+  }
+
+  // Smart Tier 3: semantic naming for images & videos
+  const slug = brandSlug || "asset";
+  const role = bgSmartAssetRole(asset);
+  const w = asset.domWidth || 0;
+  const h = asset.domHeight || 0;
+  const dims = (w > 0 && h > 0) ? `-${w}x${h}` : "";
+  return bgSanitize(`${slug}-${role}${dims}.${e}`);
 }
 
 function bgSanitize(name) {
@@ -472,6 +584,10 @@ async function handleDownloadKit(msg) {
     const logosFolder = zip.folder("logos");
     const usedNames = new Map();
 
+    // Brand slug + font URL map for smart filenames (v2.12.0)
+    const brandSlug = bgDeriveBrandSlug(domData?.pageMeta);
+    const fontUrlMap = bgBuildFontUrlMap(domData?.fontInfo);
+
     let completed = 0;
     let failed = 0;
     let totalBytes = 0;
@@ -527,7 +643,7 @@ async function handleDownloadKit(msg) {
         }
 
         const ext = bgGuessExt(asset, blobType);
-        let fileName = bgBuildFilename(asset, ext);
+        let fileName = bgBuildFilename(asset, ext, brandSlug, fontUrlMap);
 
         // ── Image compression (if enabled in settings) ──
         if (compressImages && asset.type === "image" && buffer.byteLength > 50 * 1024) {
@@ -661,7 +777,7 @@ async function handleDownloadKit(msg) {
     } else if (platform) {
       zipName = `${platform}-assets-${dateStr}.zip`;
     } else {
-      zipName = `assets-brand-kit-${dateStr}.zip`;
+      zipName = `${brandSlug}-brand-kit-${dateStr}.zip`;
     }
     zipName = bgSanitize(zipName);
 
