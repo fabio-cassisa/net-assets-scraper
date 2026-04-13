@@ -273,7 +273,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const batch = urls.slice(i, i + concurrency);
         const batchResults = await Promise.all(batch.map(async (url) => {
           try {
-            const resp = await fetch(url, { method: "HEAD", redirect: "follow" });
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 10000);
+            const resp = await fetch(url, { method: "HEAD", redirect: "follow", signal: ctrl.signal });
+            clearTimeout(timer);
             if (resp.ok) {
               const size = parseInt(resp.headers.get("content-length")) || 0;
               const type = resp.headers.get("content-type") || "";

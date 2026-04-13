@@ -4,6 +4,21 @@ all notable changes to net assets scraper.
 
 ---
 
+## v2.9.1
+
+bugfix release — CDN original resolution now works correctly with Hide UI filter, and several CDN normalization edge cases are fixed.
+
+### fixed
+
+- **Hide UI filter no longer kills CDN-verified originals** — assets with verified full-size originals now bypass all UI detection (isUI flag, URL pattern heuristics, small dimension checks). previously, content script UI classification could hide real product images even after their originals were confirmed.
+- **card metadata shows original size/dimensions** — cards for CDN-verified assets now display the original's file size and dimensions (e.g. "1.2 MB · 1200×1200") instead of the thumbnail's metadata. the card info now reflects what actually gets downloaded.
+- **Thumbor regex no longer matches every URL** — the regex had all-optional groups that degraded to matching any URL with a path. Cloudinary and other CDN URLs were misclassified as Thumbor, breaking their dedup. now requires at least one Thumbor-specific indicator (unsafe, fit-in, dimensions, smart, or filters) before matching.
+- **Storyblok regex handles query parameters** — the `$` anchor blocked matches when URLs included cache-busters or auth tokens (`?token=abc`). now correctly matches transforms followed by query strings.
+- **HEAD verification requests have 10s timeout** — a slow or hanging CDN can no longer block the entire verification pipeline. each request has an AbortController with a 10-second timeout.
+- **download size estimate uses original sizes** — the "selected size" indicator in the download bar now uses `cdnOriginalSize` for verified assets instead of the thumbnail's `contentLength`.
+
+---
+
 ## v2.9.0
 
 CDN original resolution — when a page serves tiny CDN thumbnails, NAS now detects the full-size original on the CDN server and downloads that instead. no more downloading 120×168 compressed variants when the 1200×1200 original is available.

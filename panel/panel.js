@@ -48,10 +48,12 @@ const VIDEO_FRAGMENT_PATTERNS = /\.m4s(?:\?|$)|\.ts(?:\?|$)|\/segment|\/chunk\/|
 // Storyblok: a.storyblok.com/f/SPACE/ORIGWxH/HASH/FILE.ext/m/WxH/filters:format(X):quality(Y)
 // Transforms are appended AFTER the filename via /m/ — must fire before generic Thumbor
 const STORYBLOK_HOST = /\.storyblok\.com$/;
-const STORYBLOK_TRANSFORM = /\/m\/(\d+)x(\d+)(?:\/filters:[^?#]*)?$/;
+const STORYBLOK_TRANSFORM = /\/m\/(\d+)x(\d+)(?:\/filters:[^?#]*)?(?:[?#]|$)/;
 
 // Thumbor: /unsafe/WIDTHxHEIGHT/filters:.../PATH  or  /unsafe/smart/PATH
 // Variants: some skip /unsafe/, some use /fit-in/, some chain multiple transforms
+// Require at least one Thumbor indicator (unsafe, fit-in, dims, smart, or filters) to avoid matching any URL
+const THUMBOR_INDICATORS = /\/(?:unsafe|fit-in)\/|\/\d+x\d+\/|\/(?:smart|center|top|bottom|left|right)\/|\/filters:/;
 const THUMBOR_PATTERN = /^(https?:\/\/[^/]+)\/(?:unsafe\/)?(?:fit-in\/)?(?:\d+x\d+\/)?(?:(?:smart|center|top|bottom|left|right)\/)*(?:filters:[^/]+\/)*(.+)$/;
 
 // Imgix: ?w=WIDTH&h=HEIGHT&fit=CROP&fm=FORMAT&q=QUALITY&...
@@ -97,15 +99,17 @@ function normalizeCdnUrl(url) {
       return null;
     }
 
-    // ── Thumbor ──
-    const thumborMatch = fullUrl.match(THUMBOR_PATTERN);
-    if (thumborMatch) {
-      const origin = thumborMatch[1];
-      const path = thumborMatch[2];
-      // Extract dimensions from URL for quality scoring
-      const dimMatch = fullUrl.match(/\/(\d+)x(\d+)\//);
-      const quality = dimMatch ? parseInt(dimMatch[1]) * parseInt(dimMatch[2]) : 0;
-      return { baseUrl: `${origin}/${path}`, cdnType: "thumbor", quality };
+    // ── Thumbor ── (require at least one Thumbor indicator to avoid false matches)
+    if (THUMBOR_INDICATORS.test(fullUrl)) {
+      const thumborMatch = fullUrl.match(THUMBOR_PATTERN);
+      if (thumborMatch) {
+        const origin = thumborMatch[1];
+        const path = thumborMatch[2];
+        // Extract dimensions from URL for quality scoring
+        const dimMatch = fullUrl.match(/\/(\d+)x(\d+)\//);
+        const quality = dimMatch ? parseInt(dimMatch[1]) * parseInt(dimMatch[2]) : 0;
+        return { baseUrl: `${origin}/${path}`, cdnType: "thumbor", quality };
+      }
     }
 
     // ── Cloudinary ──
@@ -766,14 +770,16 @@ function getFilteredAssets() {
   // Hide UI elements — check isUI flag AND URL-based heuristics
   if (hideUI) {
     filtered = filtered.filter((a) => {
+      // CDN assets with verified originals are real content, not UI junk
+      if (a.cdnOriginalVerified) return true;
       // Content script flagged it as UI
       if (a.isUI) return false;
       // URL-based UI detection (fallback for network-only assets)
       if (a.url && (UI_URL_PATTERNS.test(a.url) || UI_CDN_PATTERNS.test(a.url))) return false;
-      // Very small known dimensions are almost always UI — but not CDN originals
+      // Very small known dimensions are almost always UI
       const w = a.domWidth || 0;
       const h = a.domHeight || 0;
-      if (w > 0 && h > 0 && w <= 24 && h <= 24 && !a.cdnOriginalVerified) return false;
+      if (w > 0 && h > 0 && w <= 24 && h <= 24) return false;
       return true;
     });
   }
@@ -918,10 +924,15 @@ function createAssetCard(asset) {
 
   const meta = document.createElement("div");
   meta.className = "card-meta";
-  if (asset.contentLength > 0) {
+  // For CDN-verified originals, show the original's size/dims — that's what gets downloaded
+  if (asset.cdnOriginalVerified && asset.cdnOriginalSize > 0) {
+    meta.textContent = formatBytes(asset.cdnOriginalSize);
+  } else if (asset.contentLength > 0) {
     meta.textContent = formatBytes(asset.contentLength);
   }
-  if (asset.domWidth && asset.domHeight) {
+  if (asset.cdnOriginalVerified && asset.cdnOriginalDims) {
+    meta.textContent += (meta.textContent ? " · " : "") + `${asset.cdnOriginalDims.w}×${asset.cdnOriginalDims.h}`;
+  } else if (asset.domWidth && asset.domHeight) {
     meta.textContent += (meta.textContent ? " · " : "") + `${asset.domWidth}×${asset.domHeight}`;
   }
   info.appendChild(meta);
@@ -1099,11 +1110,15 @@ function updateDownloadBar() {
   document.getElementById("selectedCount").textContent = `${count} selected`;
   document.getElementById("downloadBtn").disabled = count === 0;
 
-  // Estimate size
+  // Estimate size — use CDN original size when available (that's what gets downloaded)
   let totalSize = 0;
   for (const asset of allAssets) {
-    if (selectedUrls.has(asset.url) && asset.contentLength > 0) {
-      totalSize += asset.contentLength;
+    if (selectedUrls.has(asset.url)) {
+      if (asset.cdnOriginalVerified && asset.cdnOriginalSize > 0) {
+        totalSize += asset.cdnOriginalSize;
+      } else if (asset.contentLength > 0) {
+        totalSize += asset.contentLength;
+      }
     }
   }
   document.getElementById("selectedSize").textContent = totalSize > 0 ? `~${formatBytes(totalSize)}` : "";
@@ -1125,11 +1140,13 @@ function renderBadges() {
       }
     }
     if (hideUI) {
-      if (asset.isUI) continue;
-      if (asset.url && (UI_URL_PATTERNS.test(asset.url) || UI_CDN_PATTERNS.test(asset.url))) continue;
-      const w = asset.domWidth || 0;
-      const h = asset.domHeight || 0;
-      if (w > 0 && h > 0 && w <= 24 && h <= 24 && !asset.cdnOriginalVerified) continue;
+      if (!asset.cdnOriginalVerified) {
+        if (asset.isUI) continue;
+        if (asset.url && (UI_URL_PATTERNS.test(asset.url) || UI_CDN_PATTERNS.test(asset.url))) continue;
+        const w = asset.domWidth || 0;
+        const h = asset.domHeight || 0;
+        if (w > 0 && h > 0 && w <= 24 && h <= 24) continue;
+      }
     }
     if (counts[asset.type] !== undefined) counts[asset.type]++;
   }
@@ -1482,6 +1499,8 @@ async function verifyCdnOriginals() {
 
     if (verified > 0) {
       // Re-render to show updated cards with original info + unfilter verified assets
+      const visibleAfter = getFilteredAssets().length;
+      console.log(`[NAS] CDN resolution: re-rendering — ${visibleAfter} assets visible after filters`);
       renderGrid();
       renderBadges();
       updateDownloadBar();
