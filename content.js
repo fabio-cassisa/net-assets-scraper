@@ -201,14 +201,18 @@ function extractDomColors() {
     }
   }
 
-  // If we got fewer than 100 elements from targeted selectors, fall back to sampling body
+  // If we got fewer than 100 elements from targeted selectors, sample from body
+  // but cap the querySelectorAll walk to avoid freezing on DOM-heavy pages
   if (elements.length < 100) {
-    document.querySelectorAll("body *").forEach((el) => {
+    const bodyEls = document.body.querySelectorAll("*");
+    const limit = Math.min(bodyEls.length, 2000 - elements.length);
+    for (let i = 0; i < limit; i++) {
+      const el = bodyEls[i];
       if (!seen.has(el)) {
         seen.add(el);
         elements.push(el);
       }
-    });
+    }
   }
 
   // Cap at 2000 elements for performance
@@ -404,16 +408,16 @@ function extractImageContext() {
     // Only extract logos OR SVGs with enough visual substance (not tiny icons)
     if (!isLogo && (w < 60 || h < 30)) continue;
 
-    // Serialize to blob URL
+    // Serialize to data: URI (not blob: — blob URLs are page-scoped and
+    // unfetchable from the extension panel or service worker context)
     try {
       const svgData = new XMLSerializer().serializeToString(svg);
-      const blob = new Blob([svgData], { type: "image/svg+xml" });
-      const blobUrl = URL.createObjectURL(blob);
-      if (seen.has(blobUrl)) continue;
-      seen.add(blobUrl);
+      const dataUrl = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgData)));
+      if (seen.has(dataUrl)) continue;
+      seen.add(dataUrl);
       const zone = getZone(svg);
       images.push({
-        url: blobUrl,
+        url: dataUrl,
         alt: ariaLabel || (isLogo ? "logo" : ""),
         context: zone,
         isLogo,
@@ -455,7 +459,10 @@ function detectLogo(el) {
 }
 
 // Detect UI/chrome elements — nav icons, social icons, decorative SVGs, etc.
-const UI_HINTS = /icon|arrow|chevron|caret|close|menu|hamburger|toggle|spinner|loader|breadcrumb|pagination|social|share|facebook|twitter|instagram|linkedin|youtube|tiktok|pinterest|whatsapp|telegram|discord|github|mailto|search-icon|nav-|ui-|btn-|button-|widget/;
+const UI_HINTS = /icon|arrow|chevron|caret|close|menu|hamburger|toggle|spinner|loader|breadcrumb|pagination|social|share|search-icon|nav-|ui-|btn-|button-|widget/;
+// Social platform names — only match in class/id/alt, NOT in src URLs
+// (an image at "cdn.example.com/blog/facebook-case-study.jpg" is content, not UI)
+const UI_SOCIAL_HINTS = /facebook|twitter|instagram|linkedin|youtube|tiktok|pinterest|whatsapp|telegram|discord|github|mailto/;
 const UI_ICON_DOMAINS = /fontawesome|cdnjs|googleapis.*icon|material.*icon|use\.typekit|icomoon/;
 
 function detectUIElement(el) {
@@ -477,6 +484,11 @@ function detectUIElement(el) {
   const hints = [alt, cls, id, src].join(" ");
 
   if (UI_HINTS.test(hints)) return true;
+
+  // Social platform names — only check class/id/alt (not src) to avoid
+  // false-positiving on content images whose URL happens to contain "facebook" etc.
+  const contextHints = [alt, cls, id].join(" ");
+  if (UI_SOCIAL_HINTS.test(contextHints)) return true;
 
   // 4. Icon CDN domains
   if (UI_ICON_DOMAINS.test(src)) return true;

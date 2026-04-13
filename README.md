@@ -178,7 +178,7 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 
 ## status
 
-🟢 **v2.10.2 — stable release. 15 CDN patterns + CDN original resolution + scanning intelligence + brand intelligence. full code audit — 12 bugfixes across 2 patch releases.**
+🟢 **v2.11.0 — stable release. 15 CDN patterns + CDN original resolution + scanning intelligence + brand intelligence. full code audit — all known bugs fixed.**
 
 - [x] passive network capture via `webRequest`
 - [x] smart brand color extraction (CSS vars → meta → DOM frequency)
@@ -244,7 +244,8 @@ works on chrome, arc, brave, edge, and other chromium browsers.
 
 all releases available at [github.com/fabio-cassisa/ChromeAssetsScraper/releases](https://github.com/fabio-cassisa/ChromeAssetsScraper/releases)
 
-- `v2.10` — **current stable.** CDN coverage expansion — 15 image CDN patterns (WordPress, Wix, Next.js, Cloudflare, Sanity, ImageKit, DatoCMS, Prismic added). Imgix false positive fix. v2.10.1 fixed 9 bugs from full code audit: numeric data-attribute IDs parsed as URLs, `x.com` regex false-positives on `wix.com` (3 locations), stale scan-complete toast count, hardcoded version strings, `{Cmd}` placeholder, CDN badge/checkbox CSS overlap, reactive scan button label. v2.10.2 fixed 3 correctness issues: `downloadKitInPanel()` ignoring its parameter, duplicated filter logic between badges and grid, download button race condition during CDN verification.
+- `v2.11` — **current stable.** code health release: inline SVG logos now use data: URIs (downloadable from panel), UI detection no longer false-positives on content images with social media keywords in URLs, DOM color extraction capped for performance on heavy pages, in-panel download limited to 6 concurrent fetches.
+- `v2.10` — CDN coverage expansion — 15 image CDN patterns (WordPress, Wix, Next.js, Cloudflare, Sanity, ImageKit, DatoCMS, Prismic added). Imgix false positive fix. v2.10.1 fixed 9 bugs from full code audit: numeric data-attribute IDs parsed as URLs, `x.com` regex false-positives on `wix.com` (3 locations), stale scan-complete toast count, hardcoded version strings, `{Cmd}` placeholder, CDN badge/checkbox CSS overlap, reactive scan button label. v2.10.2 fixed 3 correctness issues: `downloadKitInPanel()` ignoring its parameter, duplicated filter logic between badges and grid, download button race condition during CDN verification. v2.10.3 fixed stale panel header on tab navigation.
 - `v2.9` — CDN original resolution — detects full-size originals behind CDN thumbnails via HEAD verification, downloads originals instead of tiny transforms. verified originals bypass size filters. v2.9.1 fixed Hide UI filter bypass, Thumbor/Storyblok regex edge cases, HEAD timeout, download size estimates.
 - `v2.8` — scanning intelligence — CDN normalization (Storyblok/Thumbor/Imgix/Cloudinary/Contentful/Shopify), CSS background-image extraction, inline SVG extraction, 404 response filtering, asset pipeline debug logging.
 - `v2.7` — brand guideline generator, settings panel, enhanced brand extraction, font file downloads (Google Fonts CSS resolution), export tokens (CSS/Design Tokens JSON/markdown brief), quick summary for sales, print/PDF support.

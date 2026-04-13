@@ -1889,11 +1889,16 @@ async function downloadKitInPanel(selectedAssets) {
       return { wait: prev, release };
     }
 
-    // Download each selected asset
-    const promises = selected.map(async (asset) => {
-      try {
-        let blob;
-        let wasMuxed = false;
+    // Download each selected asset — limit concurrency to avoid overwhelming the browser
+    const CONCURRENCY = 6;
+    let cursor = 0;
+    async function next() {
+      while (cursor < selected.length) {
+        const idx = cursor++;
+        const asset = selected[idx];
+        try {
+          let blob;
+          let wasMuxed = false;
 
         if (asset.isMSECapture && asset.mseVideoId) {
           // MSE-captured video — reassemble via content script bridge
@@ -2032,9 +2037,11 @@ async function downloadKitInPanel(selectedAssets) {
         completed++;
         updateProgress();
       }
-    });
+      } // end while
+    } // end next()
 
-    await Promise.all(promises);
+    // Run pool — CONCURRENCY workers pulling from shared cursor
+    await Promise.all(Array.from({ length: CONCURRENCY }, () => next()));
 
     // Zipping phase
     progressText.textContent = `Zipping ${completed} files…`;
