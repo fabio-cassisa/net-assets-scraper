@@ -330,10 +330,15 @@ function extractImageContext() {
       }
     }
 
-    for (const url of urls) {
-      if (seen.has(url) || url.startsWith("data:")) continue;
+    for (let url of urls) {
+      if (url.startsWith("data:")) continue;
       // Safety net: reject values that aren't real URLs (e.g. numeric IDs, CSS classes)
       if (/^\d+$/.test(url) || (!url.includes("/") && !url.includes(".") && !url.startsWith("http"))) continue;
+      // Resolve relative URLs against the page origin (srcset and data-* attrs
+      // can contain bare paths like "/sites/g/files/..." which otherwise resolve
+      // against the extension origin during download → ERR_FILE_NOT_FOUND)
+      try { url = new URL(url, document.baseURI).href; } catch { continue; }
+      if (seen.has(url)) continue;
       seen.add(url);
 
       const context = getElementContext(el);
